@@ -29,7 +29,7 @@ ssh `admin`), so the whole NAS can be rebuilt from this folder.
 ## Fresh install
 
 ```sh
-sudo apt install nginx samba avahi-utils   # avahi = reverse-mDNS printer discovery
+sudo apt install nginx samba avahi-utils python3-openpyxl   # avahi = discovery, openpyxl = UPDATES.xlsx release notes
 sudo install -m 755 awaria_server.py /usr/local/bin/awaria-server
 sudo install -m 755 gcode-publish /usr/local/bin/gcode-publish
 sudo install -m 755 deploy/awaria-backup /usr/local/bin/awaria-backup

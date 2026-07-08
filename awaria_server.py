@@ -1205,7 +1205,7 @@ def render_map(db):
     return f"""<div class="farm-map">{''.join(zone_html)}</div>{legend}<div id="tip"></div>
     <script>
     (function() {{
-      const P = {json.dumps(info, ensure_ascii=False)};
+      const P = {json.dumps(info, ensure_ascii=False).replace("<", "\\u003c")};
       const tip = document.getElementById('tip');
       document.querySelectorAll('.sq').forEach(el => {{
         el.addEventListener('mouseenter', () => {{
@@ -1216,9 +1216,9 @@ def render_map(db):
           }} else {{
             text += (p.online ? '🟢 online' : '⚪ offline') + '<br>Stan: ' + p.state
                  + (p.open ? ' (' + p.open + ' otw.)' : '')
-                 + (p.file ? '<br>Drukuje: ' + p.file : '')
+                 + (p.file ? '<br>Drukuje: ' + escText(p.file) : '')
                  + (p.temps ? '<br>' + p.temps : '')
-                 + '<br>Ostatnia naprawa: ' + (p.repair || 'brak');
+                 + '<br>Ostatnia naprawa: ' + escText(p.repair || 'brak');
           }}
           tip.innerHTML = text;
           const r = el.getBoundingClientRect();
@@ -1467,7 +1467,7 @@ def render_printer(db, host):
     <script src="/awaria/static/uPlot.iife.min.js"></script>
     <script>
     (function() {{
-      const host = encodeURIComponent({json.dumps(host)});
+      const host = encodeURIComponent({json.dumps(host).replace("<", "\\u003c")});
       let chart = null;
       async function tick() {{
         try {{
@@ -2212,86 +2212,103 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 return
 
+            # live-telemetry endpoints touch only in-memory state / their own
+            # database - they neither need nor should wait for db_lock
+            m = re.fullmatch(r"/awaria/partial/telemetry/([^/]{1,32})", path)
+            if m:
+                return self.send_page(200, render_telemetry(m.group(1)))
+            m = re.fullmatch(r"/awaria/api/history/([^/]{1,32})", path)
+            if m:
+                return self.send_json(200, history_columns(m.group(1)))
+            m = re.fullmatch(r"/awaria/api/samples/([^/]{1,32})", path)
+            if m:
+                try:
+                    t_from = int((query.get("from") or ["0"])[0])
+                    t_to = int((query.get("to") or ["0"])[0])
+                except ValueError:
+                    t_from = t_to = 0
+                return self.send_json(
+                    200, samples_columns(m.group(1), t_from, t_to))
+
+            # pages are rendered while holding db_lock but SENT after
+            # releasing it: a slow client draining its response must not
+            # stall event ingestion and the workers
             with db_lock, open_db() as db:
-                if path in ("/awaria", "/awaria/"):
-                    return self.send_page(200, render_home(db))
-                m = re.fullmatch(r"/awaria/printer/([^/]{1,32})", path)
-                if m:
-                    return self.send_page(200, render_printer(db, m.group(1)))
-                if path == "/awaria/api/failures.json":
-                    rows = db.execute(
-                        "SELECT * FROM failures WHERE closed_at IS NULL"
-                        " ORDER BY blocking DESC, opened_at").fetchall()
-                    return self.send_json(200, [dict(r) for r in rows])
-                if path == "/awaria/api/catalog":
-                    # printers identify themselves here at boot + after every
-                    # g-code sync -> hostname/IP discovery for the ping worker
-                    printer = (self.headers.get("X-Printer")
-                               or "").strip()[:32]
-                    if printer and printer != "?":
-                        db.execute(
-                            "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
-                            (printer, ))
-                        db.execute(
-                            "UPDATE printers SET last_seen=?, last_ip=COALESCE(?, last_ip)"
-                            " WHERE hostname=?",
-                            (now_str(), self.headers.get("X-Forwarded-For"),
-                             printer))
-                        db.commit()
-                    return self.send_page(200, render_catalog(db),
-                                          "text/plain; charset=utf-8")
-                if path == "/awaria/defs":
-                    return self.send_page(200, render_defs_list(db))
-                if path == "/awaria/defs/new":
-                    return self.send_page(200, render_def_form(db, None))
-                m = re.fullmatch(r"/awaria/defs/(\d+)", path)
-                if m:
-                    row = db.execute("SELECT * FROM error_defs WHERE id=?",
-                                     (int(m.group(1)), )).fetchone()
-                    if row:
-                        return self.send_page(200, render_def_form(db, row))
-                m = re.fullmatch(r"/awaria/failure/(\d+)", path)
-                if m:
-                    if content := render_failure(db, int(m.group(1))):
-                        return self.send_page(200, content)
-                if path == "/awaria/components":
-                    return self.send_page(200, render_components(db))
-                m = re.fullmatch(r"/awaria/partial/telemetry/([^/]{1,32})",
-                                 path)
-                if m:
-                    return self.send_page(200, render_telemetry(m.group(1)))
-                m = re.fullmatch(r"/awaria/api/history/([^/]{1,32})", path)
-                if m:
-                    return self.send_json(200, history_columns(m.group(1)))
-                m = re.fullmatch(r"/awaria/api/samples/([^/]{1,32})", path)
-                if m:
-                    try:
-                        t_from = int((query.get("from") or ["0"])[0])
-                        t_to = int((query.get("to") or ["0"])[0])
-                    except ValueError:
-                        t_from = t_to = 0
-                    return self.send_json(
-                        200, samples_columns(m.group(1), t_from, t_to))
-                if path == "/awaria/history":
-                    return self.send_page(200, render_history(db, query))
-                if path == "/awaria/stats":
-                    return self.send_page(200, render_stats(db, query))
-                if path == "/awaria/api/notifications.json":
-                    items = [
-                        dict(r) for r in db.execute(
-                            "SELECT id, created_at, kind, text, link FROM notifications"
-                            " WHERE dismissed=0 ORDER BY id DESC LIMIT 50")
-                    ]
-                    count = db.execute(
-                        "SELECT COUNT(*) c FROM notifications WHERE dismissed=0"
-                    ).fetchone()["c"]
-                    return self.send_json(200, {
-                        "count": count,
-                        "items": items
-                    })
+                response = self.render_get(db, path, query)
+            if response is not None:
+                return self.send_page(*response)
             self.send_page(404, "not found", "text/plain")
         except Exception as ex:  # noqa: BLE001 - keep the server alive
             self.send_page(500, f"error: {ex}", "text/plain")
+
+    HTML = "text/html; charset=utf-8"
+    JSON = "application/json"
+
+    def render_get(self, db, path, query):
+        """Resolve a GET route to (status, content, content-type), or None
+        for 404. Runs with db_lock held - must not touch the client socket."""
+        if path in ("/awaria", "/awaria/"):
+            return 200, render_home(db), self.HTML
+        m = re.fullmatch(r"/awaria/printer/([^/]{1,32})", path)
+        if m:
+            return 200, render_printer(db, m.group(1)), self.HTML
+        if path == "/awaria/api/failures.json":
+            rows = db.execute(
+                "SELECT * FROM failures WHERE closed_at IS NULL"
+                " ORDER BY blocking DESC, opened_at").fetchall()
+            return 200, json.dumps([dict(r) for r in rows]), self.JSON
+        if path == "/awaria/api/catalog":
+            # printers identify themselves here at boot + after every
+            # g-code sync -> hostname/IP discovery for the ping worker.
+            # Only farm-scheme or already-known names are registered: the
+            # header is client-supplied and ends up in pages and JS.
+            printer = (self.headers.get("X-Printer") or "").strip()[:32]
+            if printer and printer != "?" and (
+                    FARM_HOST_RE.match(printer)
+                    or db.execute("SELECT 1 FROM printers WHERE hostname=?",
+                                  (printer, )).fetchone()):
+                db.execute(
+                    "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
+                    (printer, ))
+                db.execute(
+                    "UPDATE printers SET last_seen=?, last_ip=COALESCE(?, last_ip)"
+                    " WHERE hostname=?",
+                    (now_str(), self.headers.get("X-Forwarded-For"), printer))
+                db.commit()
+            return 200, render_catalog(db), "text/plain; charset=utf-8"
+        if path == "/awaria/defs":
+            return 200, render_defs_list(db), self.HTML
+        if path == "/awaria/defs/new":
+            return 200, render_def_form(db, None), self.HTML
+        m = re.fullmatch(r"/awaria/defs/(\d+)", path)
+        if m:
+            row = db.execute("SELECT * FROM error_defs WHERE id=?",
+                             (int(m.group(1)), )).fetchone()
+            if row:
+                return 200, render_def_form(db, row), self.HTML
+            return None
+        m = re.fullmatch(r"/awaria/failure/(\d+)", path)
+        if m:
+            if content := render_failure(db, int(m.group(1))):
+                return 200, content, self.HTML
+            return None
+        if path == "/awaria/components":
+            return 200, render_components(db), self.HTML
+        if path == "/awaria/history":
+            return 200, render_history(db, query), self.HTML
+        if path == "/awaria/stats":
+            return 200, render_stats(db, query), self.HTML
+        if path == "/awaria/api/notifications.json":
+            items = [
+                dict(r) for r in db.execute(
+                    "SELECT id, created_at, kind, text, link FROM notifications"
+                    " WHERE dismissed=0 ORDER BY id DESC LIMIT 50")
+            ]
+            count = db.execute(
+                "SELECT COUNT(*) c FROM notifications WHERE dismissed=0"
+            ).fetchone()["c"]
+            return 200, json.dumps({"count": count, "items": items}), self.JSON
+        return None
 
     def do_POST(self):
         path = urllib.parse.unquote(self.path.split("?")[0])
