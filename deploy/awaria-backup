@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+import sqlite3, os, glob, datetime
+
+os.makedirs("/srv/gcode/awaria_backups", exist_ok=True)
+dst = "/srv/gcode/awaria_backups/awaria-%s.db" % datetime.date.today()
+src = sqlite3.connect("/var/lib/awaria/awaria.db")
+out = sqlite3.connect(dst)
+src.backup(out)
+out.close()
+src.close()
+backups = sorted(glob.glob("/srv/gcode/awaria_backups/awaria-*.db"))
+for old in backups[:-30]:
+    os.remove(old)
+print("backup ok:", dst)

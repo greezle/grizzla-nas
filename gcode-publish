@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Publish a g-code release for the printer farm (v4).
+
+The master tree (/srv/gcode/master, exposed as the SMB share) is what every
+printer's USB drive should contain. This script compares it against the
+snapshot of the previous release (size + mtime), copies changed files into an
+immutable per-release directory under store/<seq>/ and atomically rewrites
+MANIFEST.txt and current.txt, which the printers poll (M9205 / M9204).
+
+v2 additions:
+ - release notes from UPDATES.xlsx (last row: date + comment), logged to
+   RELEASES.txt in the share and to PUBLISH_RESULT.txt
+ - triggered either by a PUBLISH flag file or by saving UPDATES.xlsx
+
+v3 additions:
+ - folders (including empty ones) are part of the release: "dir <path>"
+   manifest lines, so printers replicate the full folder structure 1:1
+ - safety hold: a release that would remove an unusually large part of the
+   library (the typical sign of a half-finished copy) is NOT published on
+   the first trigger; it must be confirmed by publishing again within 30 min
+
+v4 additions (replaces the v2 full-tree backups that filled the pendrive):
+ - differential backups: each release stores ONLY the content it destroys -
+   files that this publish removes or replaces (backups/<release id>/<path>).
+   A release that merely adds new files stores no backup at all. The files
+   are hardlinked from the immutable store/ (which still holds the previous
+   version at publish time), so a backup costs no extra bytes to create; the
+   space materializes only because the garbage collector would otherwise
+   have deleted that content.
+"""
+
+import fcntl
+import hashlib
+import os
+import shutil
+import sys
+import time
+
+ROOT = "/srv/gcode"
+MASTER = os.path.join(ROOT, "master")
+STORE = os.path.join(ROOT, "store")
+STATE = os.path.join(ROOT, "state")
+BACKUPS = os.path.join(ROOT, "backups")
+RESULT = os.path.join(MASTER, "PUBLISH_RESULT.txt")
+FLAG = os.path.join(MASTER, "PUBLISH")
+RELEASE_LOG = os.path.join(MASTER, "RELEASES.txt")
+EXCLUDE_NAMES = {
+    "PUBLISH", "PUBLISH_RESULT.txt", "README.txt", "UPDATES.xlsx",
+    "RELEASES.txt"
+}
+BACKUPS_KEPT = 30
+HOLD_WINDOW_S = 30 * 60
+
+
+def excluded(rel):
+    parts = rel.split("/")
+    return (any(p.startswith(".") or p.startswith("~$") for p in parts)
+            or parts[-1] in EXCLUDE_NAMES)
+
+
+def write_result(text):
+    with open(RESULT, "w") as f:
+        f.write("gcode-publish @ %s\n\n%s\n" %
+                (time.strftime("%Y-%m-%d %H:%M:%S"), text))
+    os.chmod(RESULT, 0o644)
+
+
+def latest_note():
+    """Best-effort: the last non-empty row of UPDATES.xlsx."""
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(os.path.join(MASTER, "UPDATES.xlsx"),
+                                    read_only=True,
+                                    data_only=True)
+        ws = wb.active
+        for row in reversed(list(ws.iter_rows(min_row=2, values_only=True))):
+            cells = [
+                str(v).strip() for v in row
+                if v is not None and str(v).strip()
+            ]
+            if cells:
+                return " | ".join(cells)
+    except Exception:
+        pass
+    return None
+
+
+def walk_master():
+    files = {}  # rel -> (size, mtime_ns)
+    for dirpath, dirnames, filenames in os.walk(MASTER):
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and not d.startswith("~$")
+        ]
+        for name in filenames:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, MASTER).replace(os.sep, "/")
+            if excluded(rel) or not os.path.isfile(full):
+                continue
+            if "\n" in rel or "\r" in rel or "\t" in rel:
+                raise SystemExit(
+                    "refusing to publish: control character in file name: %r" %
+                    rel)
+            st = os.stat(full)
+            files[rel] = (st.st_size, st.st_mtime_ns)
+    return files
+
+
+def walk_dirs():
+    """All directories under master (relative paths), for 1:1 replication."""
+    dirs = []
+    for dirpath, dirnames, filenames in os.walk(MASTER):
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and not d.startswith("~$")
+        ]
+        for d in dirnames:
+            rel = os.path.relpath(os.path.join(dirpath, d),
+                                  MASTER).replace(os.sep, "/")
+            if "\n" in rel or "\r" in rel or "\t" in rel:
+                raise SystemExit(
+                    "refusing to publish: control character in folder name: %r"
+                    % rel)
+            dirs.append(rel)
+    return sorted(dirs)
+
+
+def load_dirs():
+    path = os.path.join(STATE, "dirs.txt")
+    if not os.path.exists(path):
+        return []
+    return [line.rstrip("\n") for line in open(path) if line.rstrip("\n")]
+
+
+def save_dirs(dirs):
+    tmp = os.path.join(STATE, "dirs.txt.tmp")
+    with open(tmp, "w") as f:
+        for d in dirs:
+            f.write(d + "\n")
+    os.replace(tmp, os.path.join(STATE, "dirs.txt"))
+
+
+def load_snapshot():
+    snap = {}  # rel -> (size, mtime_ns, seq)
+    path = os.path.join(STATE, "snapshot.tsv")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                size, mtime, seq, rel = line.split("\t", 3)
+                snap[rel] = (int(size), int(mtime), int(seq))
+    return snap
+
+
+def save_snapshot(snap):
+    tmp = os.path.join(STATE, "snapshot.tsv.tmp")
+    with open(tmp, "w") as f:
+        for rel in sorted(snap):
+            size, mtime, seq = snap[rel]
+            f.write("%d\t%d\t%d\t%s\n" % (size, mtime, seq, rel))
+    os.replace(tmp, os.path.join(STATE, "snapshot.tsv"))
+
+
+def backups_by_age():
+    if not os.path.isdir(BACKUPS):
+        return []
+    entries = [
+        d for d in os.listdir(BACKUPS)
+        if os.path.isdir(os.path.join(BACKUPS, d))
+    ]
+    return sorted(entries,
+                  key=lambda d: os.path.getmtime(os.path.join(BACKUPS, d)))
+
+
+def make_diff_backup(rel_id, old_snap, files, changed):
+    """Preserve only the content this release destroys: files it removes and
+    the previous versions of files it replaces. Hardlinks from store/<seq>/,
+    which MUST still hold the old versions (run this before the GC).
+
+    Returns (backed_up_count, human_note)."""
+    doomed = sorted([rel for rel in old_snap if rel not in files]  # removed
+                    + [rel for rel in changed
+                       if rel in old_snap]  # replaced (old version)
+                    )
+    if not doomed:
+        return 0, "none needed (this release only adds files)"
+
+    backed = 0
+    lost = 0
+    for rel in doomed:
+        src = os.path.join(STORE, str(old_snap[rel][2]), rel)
+        if not os.path.exists(src):
+            lost += 1
+            continue
+        dst = os.path.join(BACKUPS, rel_id, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copyfile(src, dst)
+        backed += 1
+
+    for old in backups_by_age()[:-BACKUPS_KEPT]:
+        shutil.rmtree(os.path.join(BACKUPS, old), ignore_errors=True)
+
+    note = "backups/%s (%d removed/replaced file(s) preserved)" % (rel_id,
+                                                                   backed)
+    if lost:
+        note += " - WARNING: %d old file(s) missing from store" % lost
+    return backed, note
+
+
+def removal_needs_confirmation(old_count, removed):
+    """A release removing a big chunk of the library must be confirmed by a
+    second publish trigger within HOLD_WINDOW_S. Returns True to HOLD."""
+    hold_path = os.path.join(STATE, "removal_hold")
+    big = len(removed) > max(10, old_count * 3 // 10)
+    if not big:
+        if os.path.exists(hold_path):
+            os.remove(hold_path)
+        return False
+
+    sig = hashlib.sha1("\n".join(sorted(removed)).encode()).hexdigest()
+    confirmed = False
+    if os.path.exists(hold_path):
+        try:
+            ts, old_sig = open(hold_path).read().split()
+            confirmed = old_sig == sig and time.time() - float(
+                ts) < HOLD_WINDOW_S
+        except Exception:
+            pass
+    if confirmed:
+        os.remove(hold_path)
+        return False
+
+    with open(hold_path, "w") as f:
+        f.write("%f %s\n" % (time.time(), sig))
+    lines = [
+        "*** SAFETY HOLD - NOTHING WAS PUBLISHED ***",
+        "",
+        "This release would REMOVE %d of %d files from every printer" %
+        (len(removed), old_count),
+        "in the farm. That usually means the copy into this share is not",
+        "finished yet (or files were moved out by accident).",
+        "",
+        "If the removal is intentional: publish again within 30 minutes",
+        "(re-save UPDATES.xlsx or drop a PUBLISH file) and it will proceed.",
+        "",
+        "Files that would be removed:",
+    ]
+    lines += ["  - %s" % rel for rel in sorted(removed)[:100]]
+    if len(removed) > 100:
+        lines.append("  ... and %d more" % (len(removed) - 100))
+    write_result("\n".join(lines))
+    print("safety hold: %d removals need confirmation" % len(removed))
+    return True
+
+
+def main():
+    # The PUBLISH flag is removed first so the systemd path unit does not
+    # retrigger, and so a re-drop during a run schedules another publish.
+    if os.path.exists(FLAG):
+        os.remove(FLAG)
+
+    os.makedirs(STATE, exist_ok=True)
+    os.makedirs(STORE, exist_ok=True)
+    lock = open(os.path.join(STATE, "lock"), "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+
+    old_seq = 0
+    current_path = os.path.join(ROOT, "current.txt")
+    if os.path.exists(current_path):
+        old_seq = int(open(current_path).read().split()[0])
+    new_seq = old_seq + 1
+
+    old = load_snapshot()
+    old_dirs = load_dirs()
+    files = walk_master()
+    dirs = walk_dirs()
+
+    new_snap = {}
+    changed = []
+    for rel, (size, mtime) in files.items():
+        prev = old.get(rel)
+        if prev is not None and prev[0] == size and prev[1] == mtime:
+            new_snap[rel] = prev
+        else:
+            new_snap[rel] = (size, mtime, new_seq)
+            changed.append(rel)
+    removed = sorted(rel for rel in old if rel not in files)
+    dirs_changed = dirs != old_dirs
+
+    if not changed and not removed and not dirs_changed:
+        write_result(
+            "No changes since the last release - nothing published.\n"
+            "(Add or modify g-codes in this share first, then publish.)")
+        print("no changes")
+        return
+
+    if removed and removal_needs_confirmation(len(old), removed):
+        return
+
+    date = time.strftime("%Y-%m-%d")
+    rel_id = "%s_%d" % (date, new_seq)
+
+    # Preserve the content this release destroys, while store/ still has it
+    # (i.e. before the freeze bumps anything and before the GC below).
+    backed_count, backup_note = make_diff_backup(rel_id, old, files, changed)
+
+    # Freeze the changed files into the immutable store.
+    for rel in changed:
+        dst = os.path.join(STORE, str(new_seq), rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copyfile(os.path.join(MASTER, rel), dst)
+
+    total_bytes = sum(s for s, _, _ in new_snap.values())
+    note = latest_note()
+
+    manifest_tmp = os.path.join(ROOT, "MANIFEST.txt.tmp")
+    with open(manifest_tmp, "w") as f:
+        f.write("version 1\n")
+        f.write("seq %d\n" % new_seq)
+        f.write("date %s\n" % date)
+        f.write("id %s\n" % rel_id)
+        for d in dirs:
+            f.write("dir %s\n" % d)
+        for rel in sorted(new_snap):
+            size, _, seq = new_snap[rel]
+            f.write("file %d %d %s\n" % (seq, size, rel))
+        f.write("end %d %d\n" % (len(new_snap), total_bytes))
+    os.chmod(manifest_tmp, 0o644)
+    os.replace(manifest_tmp, os.path.join(ROOT, "MANIFEST.txt"))
+
+    current_tmp = current_path + ".tmp"
+    with open(current_tmp, "w") as f:
+        f.write("%d %s %s\n" % (new_seq, date, rel_id))
+    os.chmod(current_tmp, 0o644)
+    os.replace(current_tmp, current_path)
+
+    save_snapshot(new_snap)
+    save_dirs(dirs)
+
+    # Garbage-collect store directories no current manifest entry points to,
+    # but keep the last few so a printer mid-download does not lose its files.
+    referenced = {seq for _, _, seq in new_snap.values()}
+    keep_recent = {new_seq - i for i in range(3)}
+    for entry in os.listdir(STORE):
+        try:
+            entry_seq = int(entry)
+        except ValueError:
+            continue
+        if entry_seq not in referenced and entry_seq not in keep_recent:
+            shutil.rmtree(os.path.join(STORE, entry), ignore_errors=True)
+
+    with open(RELEASE_LOG, "a") as f:
+        f.write("%s  seq %d  %s\n" %
+                (rel_id, new_seq, note or "(no comment in UPDATES.xlsx)"))
+    os.chmod(RELEASE_LOG, 0o644)
+
+    changed_bytes = sum(files[rel][0] for rel in changed)
+    lines = [
+        "Published release %s (seq %d)" % (rel_id, new_seq),
+        "Comment: %s" % (note or "(none - add a row in UPDATES.xlsx)"),
+        "",
+        "Changed/new files: %d (%.1f MB to download per printer)" %
+        (len(changed), changed_bytes / 1e6),
+        "Removed files:     %d" % len(removed),
+        "Folders:           %d" % len(dirs),
+        "Total tree:        %d files, %.1f MB" %
+        (len(new_snap), total_bytes / 1e6),
+        "Backup:            %s" % backup_note,
+        "",
+    ]
+    lines += ["  + %s" % rel for rel in sorted(changed)[:100]]
+    if len(changed) > 100:
+        lines.append("  ... and %d more" % (len(changed) - 100))
+    lines += ["  - %s" % rel for rel in removed[:100]]
+    write_result("\n".join(lines))
+    print("published %s: %d changed, %d removed, %d dirs, backup: %s" %
+          (rel_id, len(changed), len(removed), len(dirs), backup_note))
+
+
+if __name__ == "__main__":
+    main()

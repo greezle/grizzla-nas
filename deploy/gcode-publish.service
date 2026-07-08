@@ -1,0 +1,8 @@
+[Unit]
+Description=Publish a g-code release for the printer farm
+
+[Service]
+Type=oneshot
+UMask=0022
+TimeoutStartSec=infinity
+ExecStart=/usr/local/bin/gcode-publish

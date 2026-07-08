@@ -1,0 +1,7 @@
+[Unit]
+Description=Awaria DB backup to the gcode pendrive
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/awaria-backup
+User=admin

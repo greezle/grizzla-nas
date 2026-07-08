@@ -1,0 +1,13 @@
+[Unit]
+Description=Awaria (printer failure) server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/awaria-server
+User=admin
+Restart=always
+RestartSec=5
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target

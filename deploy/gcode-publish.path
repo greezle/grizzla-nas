@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a PUBLISH flag or an UPDATES.xlsx save in the g-code master share
+
+[Path]
+PathExists=/srv/gcode/master/PUBLISH
+PathChanged=/srv/gcode/master/UPDATES.xlsx
+
+[Install]
+WantedBy=multi-user.target
