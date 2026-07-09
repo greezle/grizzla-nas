@@ -291,8 +291,10 @@ def telemetry_logger():
                 if heard is None or now - heard > STALE_PRINT_S:
                     ended = datetime.fromtimestamp(heard).strftime("%Y-%m-%d %H:%M:%S") \
                         if heard else now_str()
-                    db.execute("UPDATE print_log SET ended_at=? WHERE id=?",
-                               (ended, row["id"]))
+                    ended_ts = int(heard) if heard else now
+                    db.execute(
+                        "UPDATE print_log SET ended_at=?, ended_ts=?"
+                        " WHERE id=?", (ended, ended_ts, row["id"]))
                     LAST_FILE.pop(row["hostname"],
                                   None)  # a comeback opens a fresh session
                     closed_any = True
@@ -337,9 +339,11 @@ def mark_telemetry_since(host):
     with db_lock, open_db() as db:
         db.execute("INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
                    (host, ))
+        now, now_ts = now_pair()
         db.execute(
-            "UPDATE printers SET telemetry_since=? WHERE hostname=? AND telemetry_since IS NULL",
-            (now_str(), host))
+            "UPDATE printers SET telemetry_since=?, telemetry_since_ts=?"
+            " WHERE hostname=? AND telemetry_since IS NULL",
+            (now, now_ts, host))
         db.commit()
 
 
@@ -405,7 +409,7 @@ def track_print_sessions(host, fname):
     if fname == prev:
         return
     LAST_FILE[host] = fname
-    now = now_str()
+    now, now_ts = now_pair()
     with db_lock, open_db() as db:
         if prev is None and fname:
             # server (re)start mid-print: adopt a matching open session
@@ -416,12 +420,13 @@ def track_print_sessions(host, fname):
             if row:
                 return
         db.execute(
-            "UPDATE print_log SET ended_at=? WHERE hostname=? AND ended_at IS NULL",
-            (now, host))
+            "UPDATE print_log SET ended_at=?, ended_ts=?"
+            " WHERE hostname=? AND ended_at IS NULL", (now, now_ts, host))
         if fname:
             db.execute(
-                "INSERT INTO print_log(hostname, file, started_at) VALUES (?,?,?)",
-                (host, fname, now))
+                "INSERT INTO print_log(hostname, file, started_at,"
+                " started_ts, material) VALUES (?,?,?,?,?)",
+                (host, fname, now, now_ts, material_of_print(fname)))
         db.commit()
 
 
@@ -436,6 +441,122 @@ def live_of(host, max_age=90):
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def now_pair():
+    """(local-time string, epoch) of the same instant. The string columns
+    stay authoritative for display; the *_ts epoch twins are what analytics
+    and range queries should use (no DST ambiguity, integer compares)."""
+    t = time.time()
+    return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S"), int(t)
+
+
+def to_epoch_or_none(text):
+    """Local-time string (datetime or bare date) -> epoch; None when absent
+    or unparsable. Used by writers of *_ts and by the backfill migration."""
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return int(datetime.strptime(text, fmt).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+# recognized as a material when it appears as its own path segment - the
+# g-code library is organized ".../<model>/<MATERIAL>/<file>.gcode"
+MATERIAL_NAMES = {
+    "PLA", "PETG", "ASA", "ABS", "TPU", "PCCF", "PC", "PA", "HIPS", "PVB",
+    "PP", "FLEX"
+}
+
+
+def _material_token(text):
+    """'PETG' -> 'PETG'; flex by shore grade in all its spellings
+    ('TPU 95A', 'TPU-95A', bare '95A') -> canonical '95A'. None otherwise."""
+    text = text.strip()
+    if text in MATERIAL_NAMES:
+        return text
+    if m := re.fullmatch(r"(?:TPU|TPE)[ -]?(\d{2,3}A)|(\d{2,3}A)", text):
+        return m.group(1) or m.group(2)
+    return None
+
+
+def material_of(path):
+    """Material of a print from the library's conventions: a material-named
+    path segment ('.../PETG/...', '.../95A/...') or a bracket tag in the file
+    name itself ('[PETG] AEON JPB-L.gcode'). None = simply unknown (loose
+    files, unorganized parts of the library)."""
+    if not path:
+        return None
+    segments = str(path).upper().split("/")
+    for seg in segments:
+        if token := _material_token(seg):
+            return token
+    for m in re.finditer(r"\[([^\]]{1,10})\]", segments[-1]):
+        if token := _material_token(m.group(1)):
+            return token
+    return None
+
+
+MANIFEST_PATH = "/srv/gcode/MANIFEST.txt"
+_manifest_materials = (None, {})  # (mtime, basename -> material)
+
+
+def material_of_basename(name):
+    """Material of a print reported by basename only (the firmware streams
+    just the file name, no path): resolved against the published MANIFEST's
+    full paths. A basename that exists under two materials (PLA/ and PETG/
+    variants of the same part) is ambiguous and maps to None."""
+    global _manifest_materials
+    try:
+        mtime = os.stat(MANIFEST_PATH).st_mtime_ns
+    except OSError:
+        return None
+    if _manifest_materials[0] != mtime:
+        table = {}
+        try:
+            with open(MANIFEST_PATH, encoding="utf-8") as f:
+                for line in f:
+                    if not line.startswith("file "):
+                        continue
+                    parts = line.rstrip("\n").split(" ", 3)
+                    if len(parts) < 4:
+                        continue
+                    base = parts[3].rsplit("/", 1)[-1].lower()
+                    material = material_of(parts[3])
+                    if base in table and table[base] != material:
+                        table[base] = None  # ambiguous across materials
+                    else:
+                        table[base] = material
+        except OSError:
+            return None
+        _manifest_materials = (mtime, table)
+    return _manifest_materials[1].get(str(name).strip().lower())
+
+
+def material_of_print(fname):
+    """Material of a print: from the name itself when it carries a path
+    (future firmware), else via the manifest basename lookup."""
+    return material_of(fname) or material_of_basename(fname)
+
+
+SESSION_GRACE_S = 15 * 60  # failures are often reported just after the print
+
+
+def session_at(db, host, ts):
+    """id of the print session running on `host` at epoch `ts` - or one that
+    ended up to SESSION_GRACE_S before it (operators report failures right
+    after the print stops). None when nothing matches, e.g. printers whose
+    firmware predates telemetry and thus have no sessions at all."""
+    if ts is None:
+        return None
+    row = db.execute(
+        "SELECT id FROM print_log WHERE hostname=? AND started_ts<=?"
+        " AND COALESCE(ended_ts, 1<<62) >= ? ORDER BY id DESC LIMIT 1",
+        (host, ts, ts - SESSION_GRACE_S)).fetchone()
+    return row["id"] if row else None
 
 
 def open_db():
@@ -558,6 +679,7 @@ def init_db():
         if not db.execute("SELECT 1 FROM error_defs LIMIT 1").fetchone():
             seed_error_defs(db)
         db.commit()
+        migrate(db)
 
 
 def seed_error_defs(db):
@@ -624,6 +746,85 @@ def seed_error_defs(db):
     )
 
 
+# ------------------------------------------------------------- migrations
+# Numbered, run once, recorded in meta.schema_version. Each step must be
+# idempotent (rerun-safe) so a crash mid-migration cannot brick the start.
+
+
+def add_column(db, table, column_def):
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+    except sqlite3.OperationalError:
+        pass  # already there (rerun after a crash mid-migration)
+
+
+def migrate_1_epoch_columns(db):
+    """Epoch twins of every local-time string column, backfilled. The strings
+    remain for display; new writes fill both."""
+    for table, columns in (
+        ("events", ("received_ts",)),
+        ("failures", ("opened_ts", "closed_ts")),
+        ("print_log", ("started_ts", "ended_ts")),
+        ("maintenance", ("done_ts",)),
+        ("notifications", ("created_ts",)),
+        ("printers", ("last_seen_ts", "telemetry_since_ts")),
+    ):
+        for col in columns:
+            add_column(db, table, f"{col} INTEGER")
+    db.create_function("to_epoch", 1, to_epoch_or_none)
+    db.executescript("""
+        UPDATE events SET received_ts = to_epoch(received_at);
+        UPDATE failures SET opened_ts = to_epoch(opened_at),
+                            closed_ts = to_epoch(closed_at);
+        UPDATE print_log SET started_ts = to_epoch(started_at),
+                             ended_ts = to_epoch(ended_at);
+        UPDATE maintenance SET done_ts = to_epoch(done_at);
+        UPDATE notifications SET created_ts = to_epoch(created_at);
+        UPDATE printers SET last_seen_ts = to_epoch(last_seen),
+                            telemetry_since_ts = to_epoch(telemetry_since);
+    """)
+    db.execute("CREATE INDEX IF NOT EXISTS failures_host_ts"
+               " ON failures(hostname, opened_ts)")
+    db.execute("CREATE INDEX IF NOT EXISTS print_log_host_ts"
+               " ON print_log(hostname, started_ts)")
+
+
+def migrate_2_sessions_material(db):
+    """The job concept: failures and events point at the print session they
+    interrupted (print_session_id -> print_log.id), sessions carry the
+    material. events.answers is reserved for structured wizard answers
+    (JSON array; firmware sends them flattened into detail today)."""
+    add_column(db, "events", "print_session_id INTEGER")
+    add_column(db, "events", "answers TEXT")
+    add_column(db, "failures", "print_session_id INTEGER")
+    add_column(db, "print_log", "material TEXT")
+    for row in db.execute("SELECT id, file FROM print_log").fetchall():
+        db.execute("UPDATE print_log SET material=? WHERE id=?",
+                   (material_of_print(row["file"]), row["id"]))
+    for table, ts_col in (("events", "received_ts"), ("failures",
+                                                      "opened_ts")):
+        for row in db.execute(
+                f"SELECT id, hostname, {ts_col} AS t FROM {table}").fetchall():
+            db.execute(
+                f"UPDATE {table} SET print_session_id=? WHERE id=?",
+                (session_at(db, row["hostname"], row["t"]), row["id"]))
+
+
+MIGRATIONS = [migrate_1_epoch_columns, migrate_2_sessions_material]
+
+
+def migrate(db):
+    row = db.execute(
+        "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    version = int(row["value"]) if row else 0
+    for number, step in enumerate(MIGRATIONS[version:], start=version + 1):
+        step(db)
+        db.execute(
+            "INSERT OR REPLACE INTO meta(key, value)"
+            " VALUES ('schema_version', ?)", (str(number), ))
+        db.commit()
+
+
 def render_catalog(db):
     """Text format parsed by the printers (common/awaria_catalog.hpp)."""
     seq = db.execute(
@@ -652,9 +853,11 @@ def render_catalog(db):
 
 
 def notify(db, kind, text, hostname=None, link=None):
+    now, now_ts = now_pair()
     db.execute(
-        "INSERT INTO notifications(created_at, kind, hostname, text, link)"
-        " VALUES (?,?,?,?,?)", (now_str(), kind, hostname, text, link))
+        "INSERT INTO notifications(created_at, created_ts, kind, hostname,"
+        " text, link) VALUES (?,?,?,?,?,?)",
+        (now, now_ts, kind, hostname, text, link))
 
 
 def handle_event(data, client_ip=None):
@@ -670,29 +873,39 @@ def handle_event(data, client_ip=None):
     ptime = str(data.get("ptime") or "")[:24] or None
     seq = data.get("seq")
     seq = int(seq) if seq is not None else None
+    # structured wizard answers - flattened into detail by today's firmware,
+    # but accepted as a JSON array as soon as a future build sends them
+    answers = data.get("answers")
+    answers = (json.dumps(answers, ensure_ascii=False)[:500] if isinstance(
+        answers, list) and answers else None)
 
     if not host:
         return 400, {"ok": False, "error": "missing host"}
     if action not in ACTIONS:
         return 400, {"ok": False, "error": "bad action"}
 
-    now = now_str()
+    now, now_ts = now_pair()
     with db_lock, open_db() as db:
         db.execute("INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
                    (host, ))
         db.execute(
-            "UPDATE printers SET last_seen=?, last_ip=COALESCE(?, last_ip) WHERE hostname=?",
-            (now, client_ip, host))
+            "UPDATE printers SET last_seen=?, last_seen_ts=?,"
+            " last_ip=COALESCE(?, last_ip) WHERE hostname=?",
+            (now, now_ts, client_ip, host))
         if seq is not None:
             dup = db.execute("SELECT 1 FROM events WHERE hostname=? AND seq=?",
                              (host, seq)).fetchone()
             if dup:
                 return 200, {"ok": True, "dup": True}
 
+        # the print session this report belongs to (running now, or just over)
+        session_id = session_at(db, host, now_ts)
         db.execute(
-            "INSERT INTO events(hostname, received_at, printer_time, action,"
-            " category, label, detail, seq) VALUES (?,?,?,?,?,?,?,?)",
-            (host, now, ptime, action, category, label, detail, seq))
+            "INSERT INTO events(hostname, received_at, received_ts,"
+            " printer_time, action, category, label, detail, seq,"
+            " print_session_id, answers) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (host, now, now_ts, ptime, action, category, label, detail, seq,
+             session_id, answers))
 
         if action in ACTIONS_OPEN:
             blocking = 1 if action == "AWARIA-BLOKADA" else 0
@@ -709,8 +922,10 @@ def handle_event(data, client_ip=None):
             else:
                 failure_id = db.execute(
                     "INSERT INTO failures(hostname, category, label, detail,"
-                    " blocking, opened_at) VALUES (?,?,?,?,?,?)",
-                    (host, category, label, detail, blocking, now)).lastrowid
+                    " blocking, opened_at, opened_ts, print_session_id)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (host, category, label, detail, blocking, now, now_ts,
+                     session_id)).lastrowid
             notify(db, "failure",
                    f"{host}: {'BLOKADA' if blocking else 'awaria'} — {label}",
                    host, f"/awaria/failure/{failure_id}")
@@ -720,9 +935,10 @@ def handle_event(data, client_ip=None):
                 " AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
                 (host, category)).fetchone()
             db.execute(
-                "UPDATE failures SET closed_at=?, closed_by='drukarka'"
+                "UPDATE failures SET closed_at=?, closed_ts=?,"
+                " closed_by='drukarka'"
                 " WHERE hostname=? AND category=? AND closed_at IS NULL",
-                (now, host, category))
+                (now, now_ts, host, category))
             notify(
                 db, "repair", f"{host}: naprawiono — {label}", host,
                 f"/awaria/failure/{open_row['id']}"
@@ -1547,6 +1763,15 @@ def render_failure(db, fid):
         for c in db.execute(
             "SELECT id, name FROM components ORDER BY position, id"))
 
+    session = db.execute(
+        "SELECT file, material FROM print_log WHERE id=?",
+        (f["print_session_id"], )).fetchone() \
+        if f["print_session_id"] else None
+    session_info = (
+        f'<p>Podczas wydruku: <b>{e(session["file"])}</b>'
+        f'{" (" + e(session["material"]) + ")" if session["material"] else ""}</p>'
+        if session else "")
+
     status = state_badge_of(f)
     closed_info = (
         f'<p>Naprawiona: <b>{e(f["closed_at"])}</b> ({e(f["closed_by"] or "?")}) '
@@ -1562,6 +1787,7 @@ def render_failure(db, fid):
     <h2>Awaria: {e(f['label'])} {status}</h2>
     <div class="card">
       <div class="detail" style="font-size:15px">{e(f['detail'])}</div>
+      {session_info}
       {closed_info}
     </div>
     <h2>Naprawa</h2>
@@ -2292,10 +2518,12 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute(
                     "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
                     (printer, ))
+                now, now_ts = now_pair()
                 db.execute(
-                    "UPDATE printers SET last_seen=?, last_ip=COALESCE(?, last_ip)"
-                    " WHERE hostname=?",
-                    (now_str(), self.headers.get("X-Forwarded-For"), printer))
+                    "UPDATE printers SET last_seen=?, last_seen_ts=?,"
+                    " last_ip=COALESCE(?, last_ip) WHERE hostname=?",
+                    (now, now_ts, self.headers.get("X-Forwarded-For"),
+                     printer))
                 db.commit()
             return 200, render_catalog(db), "text/plain; charset=utf-8"
         if path == "/awaria/defs":
@@ -2413,21 +2641,23 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send_page(404, "not found", "text/plain")
                     db.execute("UPDATE failures SET repair_note=? WHERE id=?",
                                (field("note")[:500], fid))
-                    now = now_str()
+                    now, now_ts = now_pair()
                     for comp_id in form.get("component", []):
                         db.execute(
-                            "INSERT INTO maintenance(hostname, component_id, done_at, failure_id)"
-                            " VALUES (?,?,?,?)",
-                            (f["hostname"], int(comp_id), now, fid))
+                            "INSERT INTO maintenance(hostname, component_id,"
+                            " done_at, done_ts, failure_id) VALUES (?,?,?,?,?)",
+                            (f["hostname"], int(comp_id), now, now_ts, fid))
                     if action := field("action")[:120]:
                         db.execute(
-                            "INSERT INTO maintenance(hostname, action, done_at, failure_id)"
-                            " VALUES (?,?,?,?)",
-                            (f["hostname"], action, now, fid))
+                            "INSERT INTO maintenance(hostname, action,"
+                            " done_at, done_ts, failure_id) VALUES (?,?,?,?,?)",
+                            (f["hostname"], action, now, now_ts, fid))
                     if "close" in form:
                         db.execute(
-                            "UPDATE failures SET closed_at=?, closed_by='panel'"
-                            " WHERE id=? AND closed_at IS NULL", (now, fid))
+                            "UPDATE failures SET closed_at=?, closed_ts=?,"
+                            " closed_by='panel'"
+                            " WHERE id=? AND closed_at IS NULL",
+                            (now, now_ts, fid))
                     db.commit()
                 return redirect(f"/awaria/failure/{fid}")
 
@@ -2464,9 +2694,10 @@ class Handler(BaseHTTPRequestHandler):
                     elif verb == "maintenance":
                         done_at = field("done_at")[:10] or now_str()[:10]
                         db.execute(
-                            "INSERT INTO maintenance(hostname, component_id, done_at)"
-                            " VALUES (?,?,?)",
-                            (host, int(field("component_id", "0")), done_at))
+                            "INSERT INTO maintenance(hostname, component_id,"
+                            " done_at, done_ts) VALUES (?,?,?,?)",
+                            (host, int(field("component_id", "0")), done_at,
+                             to_epoch_or_none(done_at)))
                     db.commit()
                 return redirect(f"/awaria/printer/{urllib.parse.quote(host)}")
 
