@@ -43,6 +43,11 @@ FINE_KEEP_S = 4 * 86400
 # a print session whose printer went silent this long is considered over
 # (RESET button / power cut / unplugged mid-print)
 STALE_PRINT_S = 300
+# off-site backup freshness: gcode-nas-backup (the 3B) writes this stamp
+# after each successful nightly pull; the dashboard warns when it goes stale,
+# so a quietly dead backup Pi cannot go unnoticed for months
+OFFSITE_STAMP = "/var/lib/awaria/offsite_backup_stamp"
+OFFSITE_MAX_AGE_S = 50 * 3600  # nightly cadence + generous slack
 
 ACTIONS_OPEN = ("AWARIA-BLOKADA", "AWARIA")
 ACTIONS = ACTIONS_OPEN + ("NOTATKA", "NAPRAWIONO")
@@ -899,6 +904,8 @@ td.host, a.host { font-weight: 700; font-size: 17px; text-decoration: none; colo
 form.note { display: flex; gap: 6px; margin-top: 4px; }
 form.note input[type=text] { flex: 1; padding: 4px 6px; }
 .empty { padding: 30px; text-align: center; color: #777; background: #fff; }
+.warnbar { background: #f2c200; color: #111; padding: 9px 14px; font-weight: 600;
+  border-radius: 6px; margin-bottom: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
 form.wizard { background: #fff; padding: 14px 18px; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
 form.wizard fieldset { margin: 12px 0; border: 1px solid #ccc; }
 form.wizard input, form.wizard select { padding: 3px 5px; }
@@ -1232,6 +1239,21 @@ def render_map(db):
     </script>"""
 
 
+def offsite_backup_warning():
+    """Yellow bar on the home page when the off-device backup goes stale."""
+    try:
+        with open(OFFSITE_STAMP) as f:
+            age = time.time() - float(f.read().strip())
+    except (OSError, ValueError):
+        age = None
+    if age is not None and age < OFFSITE_MAX_AGE_S:
+        return ""
+    detail = (f"ostatni {age / 86400:.1f} dn. temu"
+              if age is not None else "jeszcze nigdy nie wykonany")
+    return ('<div class="warnbar">&#9888; Backup off-site nieaktualny — '
+            f'{detail} (sprawdź gcode-nas-backup)</div>')
+
+
 def render_home(db):
     open_f = db.execute("SELECT * FROM failures WHERE closed_at IS NULL"
                         " ORDER BY blocking DESC, opened_at ASC").fetchall()
@@ -1302,7 +1324,7 @@ def render_home(db):
                      + "\n".join(prows) + "</table>") if prows else \
         '<div class="empty">Żadna drukarka jeszcze nic nie zgłosiła.</div>'
 
-    body = f"""<h2>Aktywne awarie</h2>{failures_html}
+    body = f"""{offsite_backup_warning()}<h2>Aktywne awarie</h2>{failures_html}
     <div class="sec-head"><h2>Drukarki</h2>
       <div class="view-toggle">
         <button class="tab" data-view="map" onclick="setView('map')">Mapa</button>

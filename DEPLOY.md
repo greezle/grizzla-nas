@@ -26,6 +26,23 @@ ssh `admin`), so the whole NAS can be rebuilt from this folder.
   `backups/` (differential release backups), `MANIFEST.txt`, `current.txt`.
 - The retired 64 GB pendrive (label `gcode`) holds a frozen 2026-07-06 copy of the library.
 
+## Off-device backup (gcode-nas-backup)
+
+A Pi 3B+ (`gcode-nas-backup`, DHCP, ssh `admin`, wifi radio disabled) with the
+retired 64 GB pendrive (ext4, mounted `/srv/backup` by UUID, `nofail`) **pulls**
+a nightly snapshot at 04:15 (after the NAS's 03:30 awaria.db dump):
+`master/`, `state/`, `backups/`, `awaria_backups/`, `MANIFEST.txt`,
+`current.txt` → hardlinked date snapshots in `/srv/backup/snaps/<date>`
+(7 kept, `latest` symlink; unchanged files cost nothing). `store/` is
+deliberately not backed up — it is derived data; one `gcode-publish` run
+rebuilds it from a restored `master/`. After each successful pull the 3B
+writes `/var/lib/awaria/offsite_backup_stamp` on the NAS; the dashboard home
+page shows a yellow warning when the stamp is older than 50 h, so a dead
+backup Pi cannot go unnoticed. Install on the 3B: `backup-pi/nas-backup-pull`
+→ `/usr/local/bin/`, `backup-pi/nas-backup.{service,timer}` →
+`/etc/systemd/system/`, `systemctl enable --now nas-backup.timer`; the 3B
+admin's ssh key must be in the NAS admin's `authorized_keys`.
+
 ## Fresh install
 
 ```sh

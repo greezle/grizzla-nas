@@ -1,0 +1,9 @@
+[Unit]
+Description=Pull nightly off-device backup from gcode-nas
+After=network-online.target srv-backup.mount
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+ExecStart=/usr/local/bin/nas-backup-pull

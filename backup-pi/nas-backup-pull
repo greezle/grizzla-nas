@@ -1,0 +1,49 @@
+#!/bin/sh
+# Nightly off-device pull of the farm NAS (gcode-nas) onto the backup Pi's
+# pendrive. Runs on gcode-nas-backup (Pi 3B+) at 04:15, after the NAS's own
+# 03:30 awaria.db snapshot, as user admin (its ssh key is authorized on the
+# NAS). Snapshots land in /srv/backup/snaps/<date>, hardlinked against the
+# previous one, so unchanged files cost no space; the oldest are pruned to
+# KEEP. store/ is deliberately NOT backed up: it is derived data, rebuilt
+# from master/ by a single gcode-publish run after a restore.
+# On success the NAS gets a timestamp the dashboard watches - if this Pi
+# dies quietly, the panel shows a warning instead of nobody noticing.
+set -eu
+NAS=admin@192.168.68.114
+ROOT=/srv/backup/snaps
+KEEP=7
+DATE=$(date +%F)
+LOG=/var/log/nas-backup.log
+
+exec >>"$LOG" 2>&1
+exec 9>"$ROOT/.lock"
+flock -n 9 || { echo "$(date): already running - skipped"; exit 1; }
+echo "=== $(date): pull start"
+
+mountpoint -q /srv/backup || { echo "ABORT: /srv/backup not mounted"; exit 1; }
+avail_kb=$(df --output=avail /srv/backup | tail -1)
+[ "$avail_kb" -gt 3000000 ] || { echo "ABORT: only ${avail_kb} kB free"; exit 1; }
+
+DEST=$ROOT/$DATE
+LINK=""
+if [ -e "$ROOT/latest" ]; then
+    LINK="--link-dest=$(readlink -f "$ROOT/latest")"
+fi
+mkdir -p "$DEST"
+rsync -a --delete $LINK \
+    "$NAS:/srv/gcode/master" \
+    "$NAS:/srv/gcode/state" \
+    "$NAS:/srv/gcode/backups" \
+    "$NAS:/srv/gcode/awaria_backups" \
+    "$NAS:/srv/gcode/MANIFEST.txt" \
+    "$NAS:/srv/gcode/current.txt" \
+    "$DEST/"
+ln -sfn "$DEST" "$ROOT/latest"
+
+# prune old snapshots (dated directories only; never the seed's siblings)
+ls -1d "$ROOT"/2[0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] 2>/dev/null \
+    | sort | head -n -"$KEEP" | xargs -r rm -rf
+
+# tell the dashboard this off-site backup is fresh
+ssh "$NAS" "date +%s > /var/lib/awaria/offsite_backup_stamp"
+echo "=== $(date): pull done, snapshot $(du -sh "$DEST" | cut -f1), $(df -h --output=avail /srv/backup | tail -1) free"
