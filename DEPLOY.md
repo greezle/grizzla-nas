@@ -7,7 +7,7 @@ ssh `admin`), so the whole NAS can be rebuilt from this folder.
 
 | File | Installs to | Purpose |
 |---|---|---|
-| `awaria_server.py` | `/usr/local/bin/awaria-server` | Failure dashboard + error catalog + telemetry collector + notifications (stdlib Python, no deps) |
+| `awaria/` → `build-server.sh` → `build/awaria-server` | `/usr/local/bin/awaria-server` | Failure dashboard + error catalog + telemetry collector + notifications + SSE (stdlib Python, no deps; deployed as a single-file zipapp) |
 | `gcode-publish` | `/usr/local/bin/gcode-publish` | G-code release publisher (v4, differential backups) |
 | `static/*` | `/var/lib/awaria/static/` | Vendored JS (SortableJS drag lists, uPlot charts) — no internet at runtime |
 | `deploy/awaria.service` | `/etc/systemd/system/` | Dashboard service (`Restart=always`, `MemoryMax=200M`) |
@@ -47,7 +47,8 @@ admin's ssh key must be in the NAS admin's `authorized_keys`.
 
 ```sh
 sudo apt install nginx samba avahi-utils python3-openpyxl   # avahi = discovery, openpyxl = UPDATES.xlsx release notes
-sudo install -m 755 awaria_server.py /usr/local/bin/awaria-server
+sh build-server.sh   # awaria/ package -> build/awaria-server (zipapp)
+sudo install -m 755 build/awaria-server /usr/local/bin/awaria-server
 sudo install -m 755 gcode-publish /usr/local/bin/gcode-publish
 sudo install -m 755 deploy/awaria-backup /usr/local/bin/awaria-backup
 sudo mkdir -p /var/lib/awaria/static && sudo chown admin /var/lib/awaria
@@ -64,9 +65,13 @@ sudo systemctl enable --now awaria awaria-backup.timer gcode-publish.path nginx 
 ## Update just the dashboard
 
 ```sh
-scp server/awaria_server.py admin@192.168.68.114:/tmp/
-ssh admin@192.168.68.114 'sudo install -m 755 /tmp/awaria_server.py /usr/local/bin/awaria-server && sudo systemctl restart awaria'
+sh build-server.sh
+scp build/awaria-server admin@192.168.68.114:/tmp/
+ssh admin@192.168.68.114 'sudo install -m 755 /tmp/awaria-server /usr/local/bin/awaria-server && sudo systemctl restart awaria'
 ```
+
+Rollback to the pre-split monolith (kept on the NAS and in git history):
+`sudo cp /usr/local/bin/awaria-server.monolith.bak /usr/local/bin/awaria-server && sudo systemctl restart awaria`
 
 ## How the printers talk to it
 
