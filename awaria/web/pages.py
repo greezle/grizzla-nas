@@ -190,6 +190,12 @@ form.wizard table td { border: none; padding: 3px 6px; }
 """
 
 
+def display_name(path):
+    """File name of a print-session path; sessions store the full library
+    path since fw 11244, but the UI shows just the name."""
+    return str(path or "").rsplit("/", 1)[-1]
+
+
 def fmt_age(start, end=None):
     try:
         t0 = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
@@ -672,6 +678,8 @@ def render_telemetry(host):
         rows.append(("Firmware", e(v["fw_version"])))
     if isinstance(v.get("gcode_release"), str) and v["gcode_release"]:
         rows.append(("Wydanie g-code", e(v["gcode_release"])))
+    if isinstance(v.get("gcode_check"), str) and v["gcode_check"]:
+        rows.append(("Kontrola aktualizacji", e(v["gcode_check"])))
     return (
         "<table class='plain'>" +
         "".join(f"<tr><td class='muted'>{k}</td><td><b>{val}</b></td></tr>"
@@ -837,7 +845,7 @@ def render_failure(db, fid):
         (f["print_session_id"], )).fetchone() \
         if f["print_session_id"] else None
     session_info = (
-        f'<p>Podczas wydruku: <b>{e(session["file"])}</b>'
+        f'<p>Podczas wydruku: <b title="{e(session["file"])}">{e(display_name(session["file"]))}</b>'
         f'{" (" + e(session["material"]) + ")" if session["material"] else ""}</p>'
         if session else "")
 
@@ -1240,7 +1248,7 @@ def render_history(db, query):
             f'<span class="badge b-ok">w trakcie</span> {fmt_age(p["started_at"])}'
         prows.append(f"""<tr>
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
-            <td><b>{e(p['file'])}</b></td>
+            <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b></td>
             <td class="age">{e(p['started_at'])}</td><td>{duration}</td>
             <td><a href="{link}">wykres</a></td></tr>""")
     prints_html = (

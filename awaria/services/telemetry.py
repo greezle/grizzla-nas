@@ -114,7 +114,13 @@ def metrics_worker():
                         PENDING_FINE.append((host, now_ts, *point))
         if isinstance(values.get("print_filename"), str):
             mark_telemetry_since(host)
-            track_print_sessions(host, values["print_filename"])
+            fname = values["print_filename"]
+            with live_lock:
+                d = LIVE.get(host, {}).get("values", {}).get("print_dir")
+            if fname and isinstance(d, str) and d:
+                # fw >= 11244 streams the directory too - full library path
+                fname = d.rstrip("/") + "/" + fname
+            track_print_sessions(host, fname)
         if isinstance(values.get("gcode_release"), str):
             track_gcode_release(host, values["gcode_release"])
         check_overheat(host, values)
@@ -308,6 +314,15 @@ def track_print_sessions(host, fname):
     LAST_FILE[host] = fname
     now, now_ts = now_pair()
     with db_lock, open_db() as db:
+        if prev and fname and fname.endswith("/" + prev):
+            # same print - the directory arrived a moment after the name;
+            # upgrade the session identity instead of splitting the session
+            db.execute(
+                "UPDATE print_log SET file=?, material=COALESCE(?, material)"
+                " WHERE hostname=? AND file=? AND ended_at IS NULL",
+                (fname, material_of_print(fname), host, prev))
+            db.commit()
+            return
         if prev is None and fname:
             # server (re)start mid-print: adopt a matching open session
             row = db.execute(
