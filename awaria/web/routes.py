@@ -2,6 +2,7 @@
 rendered under it but sent after releasing it."""
 import json
 import os
+import subprocess
 import queue
 import re
 import urllib.parse
@@ -206,6 +207,14 @@ class Handler(BaseHTTPRequestHandler):
                 code, resp = handle_event(data,
                                           self.headers.get("X-Forwarded-For"))
                 return self.send_json(code, resp)
+
+            if path == "/awaria/api/shutdown":
+                # panel button for moving/servicing the NAS: clean systemd
+                # poweroff, fired after a beat so this response gets out first
+                subprocess.Popen(
+                    ["sh", "-c", "sleep 2; exec sudo systemctl poweroff"],
+                    start_new_session=True)
+                return self.send_json(200, {"ok": True})
 
             if path == "/awaria/api/notifications/dismiss":
                 try:

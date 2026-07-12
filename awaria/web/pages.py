@@ -252,6 +252,8 @@ def page(title, body, refresh=None):
   <a href="/awaria/stats">Statystyki</a>
   <a href="/awaria/defs">Katalog błędów</a>
   <a href="/awaria/components">Części zamienne</a>
+  <a href="#" onclick="shutdownServer(); return false"
+     style="margin-top:18px;border-top:1px solid #333;color:#999;font-size:13.5px">&#9211; Wyłącz serwer</a>
 </nav>
 <header><button id="burger" onclick="drawer()" title="Menu" aria-label="Menu"
   aria-expanded="false" aria-controls="drawer">&#9776;</button>
@@ -278,6 +280,15 @@ function drawer(open) {{
   d.classList.toggle('open', on); o.classList.toggle('show', on);
   if (on) {{ notifPanel(false); }}
   document.getElementById('burger').setAttribute('aria-expanded', on);
+}}
+async function shutdownServer() {{
+  if (!confirm('Wyłączyć serwer (przenosiny / serwis)?
+
+Drukarki będą kolejkować zgłoszenia i wstrzymają aktualizacje do jego powrotu. Odłącz zasilanie dopiero gdy zielona dioda zgaśnie (~20 s).')) {{ return; }}
+  try {{ await fetch('/awaria/api/shutdown', {{method: 'POST'}}); }} catch (err) {{}}
+  document.body.innerHTML = '<div style="padding:48px;font:17px system-ui;max-width:34em">' +
+    'Serwer się wyłącza. Poczekaj aż zielona dioda na Raspberry Pi przestanie migać (ok. 20 s), potem można odłączyć zasilanie.<br><br>' +
+    'Po podłączeniu w nowym miejscu (zasilanie + ethernet) panel wróci pod tym samym adresem po ok. minucie.</div>';
 }}
 function escText(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
 function notifPanel(open) {{
