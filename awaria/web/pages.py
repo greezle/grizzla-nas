@@ -283,9 +283,7 @@ function drawer(open) {{
   document.getElementById('burger').setAttribute('aria-expanded', on);
 }}
 async function shutdownServer() {{
-  if (!confirm('Wyłączyć serwer (przenosiny / serwis)?
-
-Drukarki będą kolejkować zgłoszenia i wstrzymają aktualizacje do jego powrotu. Odłącz zasilanie dopiero gdy zielona dioda zgaśnie (~20 s).')) {{ return; }}
+  if (!confirm('Wyłączyć serwer (przenosiny / serwis)?\n\nDrukarki będą kolejkować zgłoszenia i wstrzymają aktualizacje do jego powrotu. Odłącz zasilanie dopiero gdy zielona dioda zgaśnie (~20 s).')) {{ return; }}
   try {{ await fetch('/awaria/api/shutdown', {{method: 'POST'}}); }} catch (err) {{}}
   document.body.innerHTML = '<div style="padding:48px;font:17px system-ui;max-width:34em">' +
     'Serwer się wyłącza. Poczekaj aż zielona dioda na Raspberry Pi przestanie migać (ok. 20 s), potem można odłączyć zasilanie.<br><br>' +
