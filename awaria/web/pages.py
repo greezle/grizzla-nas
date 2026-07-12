@@ -153,7 +153,11 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
   transition: transform .3s cubic-bezier(.22,.9,.32,1), visibility .3s; }
 #notif-panel.open { transform: translateY(0); visibility: visible; }
 #notif-list { max-height: 60vh; overflow-y: auto; }
-.notif { display: flex; align-items: flex-start; border-left: 4px solid #999; border-bottom: 1px solid #eee; }
+.notif { display: flex; align-items: flex-start; border-left: 4px solid #999; border-bottom: 1px solid #eee;
+  overflow: hidden; transition: transform .24s ease, opacity .24s ease,
+  height .2s ease .16s, border-bottom-width .2s ease .16s; }
+.notif.going { transform: translateX(-110%); opacity: 0; height: 0 !important;
+  border-bottom-width: 0; pointer-events: none; }
 .notif a, .notif > span { flex: 1; padding: 8px 10px; text-decoration: none; color: #111; font-size: 13px; }
 .notif a:hover { background: #f6f6f6; }
 .notif small { display: block; color: #888; }
@@ -323,7 +327,7 @@ async function loadNotifs() {{
       const body = n.link ? '<a href="' + n.link + '">' + inner + '</a>'
                           : '<span>' + inner + '</span>';
       return '<div class="notif nk-' + n.kind + '">' + body +
-             '<button class="nx" title="Usuń" onclick="dismissNotif(' + n.id + ')">&times;</button></div>';
+             '<button class="nx" title="Usuń" onclick="dismissNotif(' + n.id + ', this)">&times;</button></div>';
     }}).join('') : '<p class="nempty">Brak powiadomień</p>';
   }} catch (err) {{}}
 }}
@@ -332,7 +336,15 @@ async function dismissNotifs(payload) {{
     headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(payload)}});
   loadNotifs();
 }}
-function dismissNotif(id) {{ dismissNotifs({{id}}); }}
+function dismissNotif(id, btn) {{
+  const row = btn.closest('.notif');
+  row.style.height = row.offsetHeight + 'px';
+  void row.offsetHeight; // lock the height before animating, or it can't collapse
+  row.classList.add('going');
+  fetch('/awaria/api/notifications/dismiss', {{method: 'POST',
+    headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify({{id}})}});
+  setTimeout(loadNotifs, 480); // re-sync badge + empty state after the exit
+}}
 function clearNotifs() {{ dismissNotifs({{all: true}}); }}
 loadNotifs();
 setInterval(loadNotifs, 60000); // slow fallback - SSE nudges are the fast path
