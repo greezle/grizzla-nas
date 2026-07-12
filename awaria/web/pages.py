@@ -145,11 +145,13 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 #bell:hover { transform: scale(1.15); }
 #bell-badge { position: absolute; top: -4px; right: -6px; background: #d32f2f; color: #fff;
   font-size: 11px; font-weight: 700; border-radius: 9px; padding: 1px 5px; min-width: 10px; }
-#notif-panel { position: absolute; right: 0; top: 34px; width: 400px; max-width: 92vw; background: #fff;
-  color: #111; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 40;
-  transform: translateY(-115%); opacity: 0; visibility: hidden;
-  transition: transform .28s cubic-bezier(.22,.9,.32,1), opacity .22s ease, visibility .28s; }
-#notif-panel.open { transform: translateY(0); opacity: 1; visibility: visible; }
+#notif-clip { position: absolute; right: -20px; top: 34px; width: 440px; max-width: 94vw;
+  overflow: hidden; padding: 0 20px 30px; pointer-events: none; z-index: 40; }
+#notif-panel { position: relative; background: #fff; color: #111; border-radius: 0 0 8px 8px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.35); pointer-events: auto;
+  transform: translateY(calc(-100% - 40px)); visibility: hidden;
+  transition: transform .3s cubic-bezier(.22,.9,.32,1), visibility .3s; }
+#notif-panel.open { transform: translateY(0); visibility: visible; }
 #notif-list { max-height: 60vh; overflow-y: auto; }
 .notif { display: flex; align-items: flex-start; border-left: 4px solid #999; border-bottom: 1px solid #eee; }
 .notif a, .notif > span { flex: 1; padding: 8px 10px; text-decoration: none; color: #111; font-size: 13px; }
@@ -272,10 +274,10 @@ def page(title, body, refresh=None):
       <path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
     <span id="bell-badge" class="hidden"></span>
   </button>
-  <div id="notif-panel">
+  <div id="notif-clip"><div id="notif-panel">
     <div id="notif-list"></div>
     <button id="notif-clear" onclick="clearNotifs()">Wyczyść wszystkie</button>
-  </div>
+  </div></div>
 </div></header>
 <main>{body[1]}</main>
 <script>
