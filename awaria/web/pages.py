@@ -31,6 +31,9 @@ header a { color: #ffb700; text-decoration: none; }
   transition: background .15s ease, padding-left .15s ease; }
 #drawer a:hover { background: #333; padding-left: 28px; }
 #drawer .brand { color: #ffb700; font-weight: 700; padding: 10px 20px 16px; border-bottom: 1px solid #333; margin-bottom: 6px; }
+#drawer .shutdown { position: absolute; bottom: 10px; left: 0; right: 0; border-top: 1px solid #333;
+  color: #999; font-size: 13.5px; }
+#drawer .shutdown:hover { color: #fff; }
 #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 19;
   opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility .25s; }
 #overlay.show { opacity: 1; visibility: visible; }
@@ -144,7 +147,9 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
   font-size: 11px; font-weight: 700; border-radius: 9px; padding: 1px 5px; min-width: 10px; }
 #notif-panel { position: absolute; right: 0; top: 34px; width: 400px; max-width: 92vw; background: #fff;
   color: #111; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 40;
-  animation: page-in .18s ease; }
+  transform: translateY(-115%); opacity: 0; visibility: hidden;
+  transition: transform .28s cubic-bezier(.22,.9,.32,1), opacity .22s ease, visibility .28s; }
+#notif-panel.open { transform: translateY(0); opacity: 1; visibility: visible; }
 #notif-list { max-height: 60vh; overflow-y: auto; }
 .notif { display: flex; align-items: flex-start; border-left: 4px solid #999; border-bottom: 1px solid #eee; }
 .notif a, .notif > span { flex: 1; padding: 8px 10px; text-decoration: none; color: #111; font-size: 13px; }
@@ -253,8 +258,7 @@ def page(title, body, refresh=None):
   <a href="/awaria/stats">Statystyki</a>
   <a href="/awaria/defs">Katalog błędów</a>
   <a href="/awaria/components">Części zamienne</a>
-  <a href="#" onclick="shutdownServer(); return false"
-     style="margin-top:18px;border-top:1px solid #333;color:#999;font-size:13.5px">&#9211; Wyłącz serwer</a>
+  <a href="#" class="shutdown" onclick="shutdownServer(); return false">&#9211; Wyłącz serwer</a>
 </nav>
 <header><button id="burger" onclick="drawer()" title="Menu" aria-label="Menu"
   aria-expanded="false" aria-controls="drawer">&#9776;</button>
@@ -268,7 +272,7 @@ def page(title, body, refresh=None):
       <path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
     <span id="bell-badge" class="hidden"></span>
   </button>
-  <div id="notif-panel" class="hidden">
+  <div id="notif-panel">
     <div id="notif-list"></div>
     <button id="notif-clear" onclick="clearNotifs()">Wyczyść wszystkie</button>
   </div>
@@ -292,8 +296,8 @@ async function shutdownServer() {{
 function escText(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
 function notifPanel(open) {{
   const p = document.getElementById('notif-panel');
-  const on = open === undefined ? p.classList.contains('hidden') : open;
-  p.classList.toggle('hidden', !on);
+  const on = open === undefined ? !p.classList.contains('open') : open;
+  p.classList.toggle('open', on);
   if (on) {{ drawer(false); }}
   document.getElementById('bell').setAttribute('aria-expanded', on);
 }}
