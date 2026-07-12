@@ -179,7 +179,7 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .b-block { background: #d32f2f; color: #fff; }
 .b-degr { background: #f2c200; color: #111; }
 .b-ok { background: #2e7d32; color: #fff; }
-main { padding: 16px 20px; max-width: 1200px; margin: 0 auto; }
+main { padding: 16px 20px 260px; max-width: 1200px; margin: 0 auto; }
 h2 { font-size: 16px; margin: 22px 0 8px; }
 table { border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
 th { text-align: left; font-size: 12px; text-transform: uppercase; color: #666; padding: 7px 10px; border-bottom: 2px solid #ddd; }
@@ -496,6 +496,8 @@ def render_map(db):
                 temps.append(f"dysza {v['temp_noz']:.0f}°")
             if isinstance(v.get("temp_bed"), float):
                 temps.append(f"stół {v['temp_bed']:.0f}°")
+            if isinstance(v.get("temp_brd"), float):
+                temps.append(f"xBuddy {v['temp_brd']:.0f}°")
             if is_overheated(h):
                 mcu = v.get("temp_mcu")
                 brd = v.get("temp_brd")
