@@ -17,7 +17,8 @@ from awaria.services.catalog import SEVERITY_NAMES, LABEL_MAX_B, \
 
 CSS = """
 body { font-family: system-ui, sans-serif; margin: 0; background: #f2f2f2; color: #111; }
-header { background: #1a1a1a; color: #fff; padding: 10px 20px; display: flex; align-items: center; gap: 16px; }
+header { background: #1a1a1a; color: #fff; padding: 10px 20px; display: flex; align-items: center; gap: 16px;
+  position: sticky; top: 0; z-index: 15; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
 header h1 { font-size: 20px; margin: 0; }
 header a { color: #ffb700; text-decoration: none; }
 #burger { background: none; border: none; color: #fff; font-size: 22px; cursor: pointer; padding: 2px 6px;
