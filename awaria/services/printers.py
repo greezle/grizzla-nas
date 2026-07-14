@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from awaria.config import SUBNET_PREFIX, FARM_HOST_RE
 from awaria.db import db_lock, net_log, open_db
 from awaria.services import bus
-from awaria.services.telemetry import live_lock, IP2HOST
+from awaria.services.telemetry import live_lock, live_of, IP2HOST
 
 
 # live connectivity of the printers, maintained by ping_worker()
@@ -18,7 +18,10 @@ ONLINE = {}  # hostname -> bool
 
 
 def ping_ip(ip):
-    return subprocess.run(["ping", "-c", "1", "-W", "1", ip],
+    # two attempts: the printers' lwip deprioritizes ICMP under load, and a
+    # single missed 1 s ping used to flag phantom 30 s "disconnects" (22 of
+    # 23 audited offline events had telemetry flowing right through them)
+    return subprocess.run(["ping", "-c", "2", "-i", "0.3", "-W", "1", ip],
                           stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL).returncode == 0
 
@@ -113,7 +116,8 @@ def ping_worker():
                 for (host,
                      _), ok in zip(targets,
                                    pool.map(lambda t: ping_ip(t[1]), targets)):
-                    results[host] = ok
+                    # fresh telemetry IS proof of life - stronger than ping
+                    results[host] = ok or live_of(host, max_age=75) is not None
         with online_lock:
             prev = dict(ONLINE)
             changed = results != ONLINE
