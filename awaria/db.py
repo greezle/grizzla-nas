@@ -133,6 +133,19 @@ def session_at(db, host, ts):
     return row["id"] if row else None
 
 
+def classify_print(db, host, fname):
+    """'service' when the printer has an open BLOCKING failure (test prints
+    during repairs - the blocked screen's test-print override), 'test' for
+    test files by name, 'prod' otherwise. Decided at print start."""
+    if db.execute(
+            "SELECT 1 FROM failures WHERE hostname=? AND blocking=1"
+            " AND closed_at IS NULL LIMIT 1", (host, )).fetchone():
+        return "service"
+    if "test" in str(fname or "").lower():
+        return "test"
+    return "prod"
+
+
 def net_log(db, host, event, detail=None):
     """One connectivity-audit row; the caller commits."""
     now, now_ts = now_pair()
@@ -410,9 +423,24 @@ def migrate_4_printer_mac(db):
     add_column(db, "printers", "mac TEXT")
 
 
+def migrate_5_print_kind(db):
+    """print_log.kind: 'prod' (counts everywhere), 'service' (started while
+    a blocking failure was open - repair test prints), 'test' (test files).
+    Logged but excluded from the history list and usage statistics."""
+    add_column(db, "print_log", "kind TEXT NOT NULL DEFAULT 'prod'")
+    db.execute("UPDATE print_log SET kind='test'"
+               " WHERE kind='prod' AND lower(file) LIKE '%test%'")
+    db.execute("""UPDATE print_log SET kind='service'
+        WHERE kind='prod' AND EXISTS (
+            SELECT 1 FROM failures f
+            WHERE f.hostname = print_log.hostname AND f.blocking = 1
+              AND f.opened_ts <= print_log.started_ts
+              AND COALESCE(f.closed_ts, 1 << 62) >= print_log.started_ts)""")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
-    migrate_4_printer_mac
+    migrate_4_printer_mac, migrate_5_print_kind
 ]
 
 

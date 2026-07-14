@@ -11,7 +11,7 @@ from collections import deque
 from datetime import datetime
 
 from awaria.config import TELEMETRY_DB, METRICS_PORT
-from awaria.db import db_lock, net_log, open_db, now_str, now_pair, material_of_print
+from awaria.db import classify_print, db_lock, net_log, open_db, now_str, now_pair, material_of_print
 from awaria.services import bus
 from awaria.services.notifications import notify
 
@@ -390,10 +390,12 @@ def track_print_sessions(host, fname):
         if prev and fname and fname.endswith("/" + prev):
             # same print - the directory arrived a moment after the name;
             # upgrade the session identity instead of splitting the session
+            kind = classify_print(db, host, fname)
             db.execute(
-                "UPDATE print_log SET file=?, material=COALESCE(?, material)"
+                "UPDATE print_log SET file=?, material=COALESCE(?, material),"
+                " kind=CASE WHEN ?='prod' THEN kind ELSE ? END"
                 " WHERE hostname=? AND file=? AND ended_at IS NULL",
-                (fname, material_of_print(fname), host, prev))
+                (fname, material_of_print(fname), kind, kind, host, prev))
             db.commit()
             return
         if prev is None and fname:
@@ -425,8 +427,9 @@ def track_print_sessions(host, fname):
         if fname:
             db.execute(
                 "INSERT INTO print_log(hostname, file, started_at,"
-                " started_ts, material) VALUES (?,?,?,?,?)",
-                (host, fname, now, now_ts, material_of_print(fname)))
+                " started_ts, material, kind) VALUES (?,?,?,?,?,?)",
+                (host, fname, now, now_ts, material_of_print(fname),
+                 classify_print(db, host, fname)))
         db.commit()
     bus.publish("printers", host)
 

@@ -1000,6 +1000,7 @@ def printer_usage(db, host, t_from, t_to, include_weekends):
          min(to_epoch(r["ended_at"]) if r["ended_at"] else now, t_to))
         for r in db.execute(
             "SELECT started_at, ended_at FROM print_log WHERE hostname=?"
+            " AND kind='prod'"
             " AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)", (
                 host, to_str, from_str))
     ]
@@ -1262,6 +1263,15 @@ def render_netlog(db, query):
     return page("GRIZZLA — log sieci", ("", body))
 
 
+def kind_badge(p):
+    """Small marker on non-production sessions (visible with all=1)."""
+    kind = p["kind"] if "kind" in p.keys() else "prod"
+    if kind == "prod":
+        return ""
+    label = "serwis" if kind == "service" else "test"
+    return f' <span class="badge b-degr">{label}</span>'
+
+
 def render_history(db, query):
     host = (query.get("host") or [""])[0][:32]
     range_h = (query.get("range") or ["24"])[0]
@@ -1316,15 +1326,18 @@ def render_history(db, query):
 
     week_ago = (datetime.now() -
                 timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    show_all = bool(query.get("all"))
+    kind_filter = "" if show_all else " AND kind='prod'"
     if host:
         prints = db.execute(
-            "SELECT * FROM print_log WHERE started_at>=? AND hostname=?"
-            " ORDER BY started_at DESC LIMIT 200",
+            f"SELECT * FROM print_log WHERE started_at>=? AND hostname=?"
+            f"{kind_filter} ORDER BY started_at DESC LIMIT 200",
             (week_ago, host)).fetchall()
     else:
         prints = db.execute(
-            "SELECT * FROM print_log WHERE started_at>=?"
-            " ORDER BY started_at DESC LIMIT 200", (week_ago, )).fetchall()
+            f"SELECT * FROM print_log WHERE started_at>=?"
+            f"{kind_filter} ORDER BY started_at DESC LIMIT 200",
+            (week_ago, )).fetchall()
     prows = []
     for p in prints:
         start_e = to_epoch(p["started_at"])
@@ -1335,7 +1348,7 @@ def render_history(db, query):
             f'<span class="badge b-ok">w trakcie</span> {fmt_age(p["started_at"])}'
         prows.append(f"""<tr>
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
-            <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b></td>
+            <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b>{kind_badge(p)}</td>
             <td class="age">{e(p['started_at'])}</td><td>{duration}</td>
             <td><a href="{link}">wykres</a></td></tr>""")
     prints_html = (
@@ -1353,7 +1366,10 @@ def render_history(db, query):
       </form>
     </div>
     {chart_html}
-    <h2>Wydruki (ostatnie 7 dni)</h2>{prints_html}
+    <h2>Wydruki (ostatnie 7 dni)
+      <a style="float:right;font-weight:400;font-size:13px"
+         href="/awaria/history?all={'' if show_all else '1'}{'&host=' + urllib.parse.quote(host) if host else ''}">
+         {'ukryj testy i serwisowe' if show_all else 'pokaż też testy i serwisowe'}</a></h2>{prints_html}
     <p class="muted">Historia temperatur: 1 próbka / {FINE_EVERY_S} s na drukarkę, przechowywana
     {FINE_KEEP_S // 86400} dni; długie zakresy są uśredniane do ~3600 punktów — zawęź zakres
     (albo kliknij "wykres" przy wydruku), aby zobaczyć pełny detal. Wydruki wykrywane z
