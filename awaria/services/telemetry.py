@@ -116,7 +116,14 @@ def metrics_worker():
             mark_telemetry_since(host)
             fname = values["print_filename"]
             with live_lock:
-                d = LIVE.get(host, {}).get("values", {}).get("print_dir")
+                v_all = LIVE.get(host, {}).get("values", {})
+                d = v_all.get("print_dir")
+                state = v_all.get("print_state")
+            if isinstance(state, str) and state and state not in ("printing",
+                                                                  "paused"):
+                # fw >= 11247 states are authoritative: a finished/aborted/
+                # idle print is over even if a filename still trickles in
+                fname = ""
             if fname and isinstance(d, str) and d:
                 # fw >= 11244 streams the directory too - full library path
                 fname = d.rstrip("/") + "/" + fname
@@ -330,6 +337,19 @@ def track_print_sessions(host, fname):
                 " AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
                 (host, fname)).fetchone()
             if row:
+                return
+            row = db.execute(
+                "SELECT id FROM print_log WHERE hostname=? AND file=?"
+                " AND ended_ts >= ? ORDER BY id DESC LIMIT 1",
+                (host, fname, now_ts - 1800)).fetchone()
+            if row:
+                # dropped off the network mid-print and came back: the
+                # watchdog-closed session continues instead of splitting
+                db.execute(
+                    "UPDATE print_log SET ended_at=NULL, ended_ts=NULL"
+                    " WHERE id=?", (row["id"], ))
+                db.commit()
+                bus.publish("printers", host)
                 return
         db.execute(
             "UPDATE print_log SET ended_at=?, ended_ts=?"
