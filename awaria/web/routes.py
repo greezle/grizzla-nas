@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
 
 from awaria.config import STATIC_DIR, FARM_HOST_RE
-from awaria.db import db_lock, open_db, now_str, now_pair, to_epoch_or_none
+from awaria.db import db_lock, net_log, open_db, now_str, now_pair, to_epoch_or_none
 from awaria.services import bus
 from awaria.services.catalog import render_catalog, save_def, reorder_defs
 from awaria.services.failures import handle_event
@@ -18,7 +18,8 @@ from awaria.services.telemetry import (history_columns, samples_columns)
 from awaria.web.pages import (page, render_home, render_printer,
                               render_failure, render_components,
                               render_history, render_stats, render_defs_list,
-                              render_def_form, render_telemetry)
+                              render_def_form, render_netlog,
+                              render_telemetry)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -149,12 +150,18 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute(
                     "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
                     (printer, ))
+                new_ip = self.headers.get("X-Forwarded-For")
+                old = db.execute(
+                    "SELECT last_ip FROM printers WHERE hostname=?",
+                    (printer, )).fetchone()
+                if new_ip and old and old["last_ip"] and old["last_ip"] != new_ip:
+                    net_log(db, printer, "ip_change",
+                            f"{old['last_ip']} -> {new_ip} (check-in)")
                 now, now_ts = now_pair()
                 db.execute(
                     "UPDATE printers SET last_seen=?, last_seen_ts=?,"
                     " last_ip=COALESCE(?, last_ip) WHERE hostname=?",
-                    (now, now_ts, self.headers.get("X-Forwarded-For"),
-                     printer))
+                    (now, now_ts, new_ip, printer))
                 db.commit()
             return 200, render_catalog(db), "text/plain; charset=utf-8"
         if path == "/awaria/defs":
@@ -175,6 +182,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if path == "/awaria/components":
             return 200, render_components(db), self.HTML
+        if path == "/awaria/netlog":
+            return 200, render_netlog(db, query), self.HTML
         if path == "/awaria/history":
             return 200, render_history(db, query), self.HTML
         if path == "/awaria/stats":

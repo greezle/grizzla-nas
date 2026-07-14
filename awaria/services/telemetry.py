@@ -11,7 +11,7 @@ from collections import deque
 from datetime import datetime
 
 from awaria.config import TELEMETRY_DB, METRICS_PORT
-from awaria.db import db_lock, open_db, now_str, now_pair, material_of_print
+from awaria.db import db_lock, net_log, open_db, now_str, now_pair, material_of_print
 from awaria.services import bus
 from awaria.services.notifications import notify
 
@@ -49,22 +49,84 @@ HISTORY_LEN = 1800  # ~30 min at the ~1 Hz packet rate
 HISTORY_KEYS = ("temp_noz", "ttemp_noz", "temp_bed", "ttemp_bed", "temp_brd")
 
 
+# printer MAC <-> hostname, learned from live traffic (single-threaded:
+# only the metrics worker touches these)
+MAC2HOST = {}
+HOST2MAC = {}
+
+
+def syslog_mac(text):
+    """MAC from the metrics syslog header: '<pri>1 - <mac> buddy - - -'."""
+    parts = text.split(" ", 3)
+    if len(parts) >= 3 and re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}",
+                                        parts[2]):
+        return parts[2].lower()
+    return None
+
+
+def load_macs():
+    with db_lock, open_db() as db:
+        for r in db.execute(
+                "SELECT hostname, mac FROM printers WHERE mac IS NOT NULL"):
+            MAC2HOST[r["mac"]] = r["hostname"]
+            HOST2MAC[r["hostname"]] = r["mac"]
+
+
+def resolve_sender(ip, text):
+    """Who is streaming from `ip`? Known addresses map directly; an unknown
+    address is adopted via the MAC in the packet header - a printer that
+    changed its DHCP address mid-print re-identifies within seconds instead
+    of being dropped until its next HTTP check-in."""
+    with live_lock:
+        host = IP2HOST.get(ip)
+    mac = syslog_mac(text)
+    if host:
+        if mac and HOST2MAC.get(host) != mac:
+            HOST2MAC[host] = mac
+            MAC2HOST[mac] = host
+            with db_lock, open_db() as db:
+                db.execute("UPDATE printers SET mac=? WHERE hostname=?",
+                           (mac, host))
+                db.commit()
+        return host
+    host = MAC2HOST.get(mac) if mac else None
+    if not host:
+        return None
+    with db_lock, open_db() as db:
+        db.execute("INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
+                   (host, ))
+        old = db.execute("SELECT last_ip FROM printers WHERE hostname=?",
+                         (host, )).fetchone()
+        db.execute(
+            "UPDATE printers SET last_ip=NULL"
+            " WHERE last_ip=? AND hostname != ?", (ip, host))
+        db.execute("UPDATE printers SET last_ip=? WHERE hostname=?",
+                   (ip, host))
+        net_log(db, host, "rediscovered",
+                f"{old['last_ip'] if old else '?'} -> {ip} (MAC z telemetrii)")
+        db.commit()
+    with live_lock:
+        IP2HOST[ip] = host
+    bus.publish("printers", host)
+    return host
+
+
 def metrics_worker():
     """Receives the firmware's UDP metrics stream (RFC5424-ish syslog with
     an influx-like text payload) and keeps the latest values per printer.
     The sender is identified by its source IP (printers.last_ip mapping)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", METRICS_PORT))
+    load_macs()
     while True:
         try:
             data, addr = sock.recvfrom(4096)
         except OSError:
             continue
-        with live_lock:
-            host = IP2HOST.get(addr[0])
+        text = data.decode("utf-8", "replace")
+        host = resolve_sender(addr[0], text)
         if not host:
             continue
-        text = data.decode("utf-8", "replace")
         # header: "<pri>1 - <mac> buddy - - - msg=N,tm=...,v=4 " then points
         header_end = text.find(",v=4 ")
         if header_end < 0:
@@ -184,7 +246,7 @@ def telemetry_logger():
         with db_lock, open_db() as db:
             closed_any = False
             for row in db.execute(
-                    "SELECT id, hostname FROM print_log WHERE ended_at IS NULL"
+                    "SELECT id, hostname, file FROM print_log WHERE ended_at IS NULL"
             ).fetchall():
                 heard = last_heard.get(row["hostname"])
                 if heard is None or now - heard > STALE_PRINT_S:
@@ -194,6 +256,10 @@ def telemetry_logger():
                     db.execute(
                         "UPDATE print_log SET ended_at=?, ended_ts=?"
                         " WHERE id=?", (ended, ended_ts, row["id"]))
+                    silence = f"{now - int(heard)} s" if heard else "?"
+                    net_log(
+                        db, row["hostname"], "telemetry_lost_mid_print",
+                        f"plik: {row['file']}, cisza od {silence}")
                     LAST_FILE.pop(row["hostname"],
                                   None)  # a comeback opens a fresh session
                     closed_any = True
@@ -339,7 +405,7 @@ def track_print_sessions(host, fname):
             if row:
                 return
             row = db.execute(
-                "SELECT id FROM print_log WHERE hostname=? AND file=?"
+                "SELECT id, ended_ts FROM print_log WHERE hostname=? AND file=?"
                 " AND ended_ts >= ? ORDER BY id DESC LIMIT 1",
                 (host, fname, now_ts - 1800)).fetchone()
             if row:
@@ -348,6 +414,8 @@ def track_print_sessions(host, fname):
                 db.execute(
                     "UPDATE print_log SET ended_at=NULL, ended_ts=NULL"
                     " WHERE id=?", (row["id"], ))
+                net_log(db, host, "print_session_reopened",
+                        f"przerwa ~{now_ts - row['ended_ts']} s, plik: {fname}")
                 db.commit()
                 bus.publish("printers", host)
                 return

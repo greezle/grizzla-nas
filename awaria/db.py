@@ -133,6 +133,14 @@ def session_at(db, host, ts):
     return row["id"] if row else None
 
 
+def net_log(db, host, event, detail=None):
+    """One connectivity-audit row; the caller commits."""
+    now, now_ts = now_pair()
+    db.execute(
+        "INSERT INTO net_log(at, at_ts, hostname, event, detail)"
+        " VALUES (?,?,?,?,?)", (now, now_ts, host, event, detail))
+
+
 def open_db():
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
@@ -379,7 +387,33 @@ def migrate_2_sessions_material(db):
                 (session_at(db, row["hostname"], row["t"]), row["id"]))
 
 
-MIGRATIONS = [migrate_1_epoch_columns, migrate_2_sessions_material]
+def migrate_3_net_log(db):
+    """Connectivity audit: offline/online transitions (flagged when they
+    interrupt a print), DHCP address changes and mDNS re-discoveries,
+    telemetry silences - the raw material for diagnosing how healthy the
+    farm network is."""
+    db.execute("""CREATE TABLE IF NOT EXISTS net_log (
+        id INTEGER PRIMARY KEY,
+        at TEXT NOT NULL,
+        at_ts INTEGER NOT NULL,
+        hostname TEXT NOT NULL,
+        event TEXT NOT NULL,
+        detail TEXT)""")
+    db.execute("CREATE INDEX IF NOT EXISTS net_log_host_time"
+               " ON net_log(hostname, at_ts)")
+
+
+def migrate_4_printer_mac(db):
+    """printers.mac - learned from the telemetry syslog header; the stable
+    identity anchor that survives DHCP address churn (the printers stopped
+    answering mDNS, so re-discovery rides on the MAC instead)."""
+    add_column(db, "printers", "mac TEXT")
+
+
+MIGRATIONS = [
+    migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
+    migrate_4_printer_mac
+]
 
 
 def migrate(db):

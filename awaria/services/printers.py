@@ -5,7 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from awaria.config import SUBNET_PREFIX, FARM_HOST_RE
-from awaria.db import db_lock, open_db
+from awaria.db import db_lock, net_log, open_db
 from awaria.services import bus
 from awaria.services.telemetry import live_lock, IP2HOST
 
@@ -62,23 +62,42 @@ def ping_worker():
                     r["hostname"]
                     for r in db.execute("SELECT hostname FROM printers")
                 }
-                known_ips = {
-                    r["last_ip"]
+                mapped = {
+                    r["hostname"]: r["last_ip"]
                     for r in db.execute(
-                        "SELECT last_ip FROM printers WHERE last_ip IS NOT NULL"
-                    )
+                        "SELECT hostname, last_ip FROM printers"
+                        " WHERE last_ip IS NOT NULL")
                 }
-                unknown = [ip for ip in alive if ip not in known_ips]
+                # resolve every alive address except the confirmed (online)
+                # ones: a STALE last_ip of another printer used to shadow
+                # re-discovery after DHCP address churn
+                with online_lock:
+                    online_now = dict(ONLINE)
+                confirmed = {
+                    ip
+                    for host, ip in mapped.items() if online_now.get(host)
+                }
+                unknown = [ip for ip in alive if ip not in confirmed]
                 for ip, host in resolve_mdns(unknown).items():
                     # only farm-scheme hostnames (or already-known ones) - the
                     # subnet also has PCs, phones, the NAS itself...
-                    if FARM_HOST_RE.match(host) or host in known_hosts:
-                        db.execute(
-                            "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
-                            (host, ))
-                        db.execute(
-                            "UPDATE printers SET last_ip=? WHERE hostname=?",
-                            (ip, host))
+                    if not (FARM_HOST_RE.match(host) or host in known_hosts):
+                        continue
+                    old = mapped.get(host)
+                    if old == ip:
+                        continue
+                    db.execute(
+                        "UPDATE printers SET last_ip=NULL"
+                        " WHERE last_ip=? AND hostname != ?", (ip, host))
+                    db.execute(
+                        "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
+                        (host, ))
+                    db.execute(
+                        "UPDATE printers SET last_ip=? WHERE hostname=?",
+                        (ip, host))
+                    if old:
+                        net_log(db, host, "rediscovered",
+                                f"{old} -> {ip} (mDNS)")
                 db.commit()
 
         with db_lock, open_db() as db:
@@ -96,11 +115,53 @@ def ping_worker():
                                    pool.map(lambda t: ping_ip(t[1]), targets)):
                     results[host] = ok
         with online_lock:
+            prev = dict(ONLINE)
             changed = results != ONLINE
             ONLINE.clear()
             ONLINE.update(results)
         if changed:
             bus.publish("printers")
+
+        # connectivity audit + automatic re-discovery; must never kill the
+        # worker, whatever the network throws at it
+        try:
+            went_off = [
+                h for h, ok in results.items() if not ok and prev.get(h)
+            ]
+            came_back = [
+                h for h, ok in results.items() if ok and prev.get(h) is False
+            ]
+            if went_off or came_back:
+                with db_lock, open_db() as db:
+                    for h in went_off:
+                        row = db.execute(
+                            "SELECT file FROM print_log WHERE hostname=?"
+                            " AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+                            (h, )).fetchone()
+                        net_log(
+                            db, h,
+                            "offline_mid_print" if row else "offline",
+                            f"drukowany plik: {row['file']}" if row else None)
+                    for h in came_back:
+                        row = db.execute(
+                            "SELECT at_ts FROM net_log WHERE hostname=?"
+                            " AND event LIKE 'offline%'"
+                            " ORDER BY id DESC LIMIT 1", (h, )).fetchone()
+                        gap = (f"po {(int(time.time()) - row['at_ts']) // 60}"
+                               " min przerwy") if row else None
+                        net_log(db, h, "online", gap)
+                    db.commit()
+
+            # every offline printer: ask the network for its hostname and
+            # adopt the new address -> reconnect survives DHCP churn
+            if went_off:
+                # someone vanished: sweep on the next cycle (30 s) instead of
+                # waiting out the regular ~4 min sweep period - a printer that
+                # came back under a new DHCP address is re-adopted quickly
+                cycle = 8
+        except Exception as ex:  # noqa: BLE001
+            print("net audit error:", ex)
+
         cycle += 1
         time.sleep(30)
 

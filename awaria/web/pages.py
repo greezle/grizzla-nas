@@ -262,6 +262,7 @@ def page(title, body, refresh=None):
   <a href="/awaria/">Panel serwisowy</a>
   <a href="/awaria/history">Historia</a>
   <a href="/awaria/stats">Statystyki</a>
+  <a href="/awaria/netlog">Log sieci</a>
   <a href="/awaria/defs">Katalog błędów</a>
   <a href="/awaria/components">Części zamienne</a>
   <a href="#" class="shutdown" onclick="shutdownServer(); return false">&#9211; Wyłącz serwer</a>
@@ -1203,6 +1204,62 @@ def render_stats(db, query):
     odznacz drukarki lub całe sekcje, aby przeliczyć sumę na bieżąco.</p>
     {recalc_js}"""
     return page("GRIZZLA — statystyki", ("", body))
+
+
+NET_EVENT_BADGE = {
+    "offline": "b-block",
+    "offline_mid_print": "b-block",
+    "telemetry_lost_mid_print": "b-block",
+    "online": "b-ok",
+    "rediscovered": "b-degr",
+    "ip_change": "b-degr",
+    "print_session_reopened": "b-degr",
+}
+
+
+def render_netlog(db, query):
+    """Connectivity audit viewer: transitions, IP changes, re-discoveries
+    and telemetry silences - the material for judging network stability."""
+    host = (query.get("host") or [""])[0][:32]
+    where, args = ("WHERE hostname=?", [host]) if host else ("", [])
+    rows = db.execute(
+        f"SELECT * FROM net_log {where} ORDER BY id DESC LIMIT 500",
+        args).fetchall()
+
+    day_ago = int(time.time()) - 86400
+    summary = db.execute(
+        "SELECT hostname, COUNT(*) c FROM net_log"
+        " WHERE event LIKE 'offline%' AND at_ts > ?"
+        " GROUP BY hostname ORDER BY c DESC LIMIT 12", (day_ago, )).fetchall()
+    chips = " ".join(
+        f'<a class="chip" style="background:#607d8b" '
+        f'href="/awaria/netlog?host={urllib.parse.quote(r["hostname"])}">'
+        f'{e(r["hostname"])}: {r["c"]}&times;</a>' for r in summary)
+    summary_html = (f'<div class="card"><h3>Najczęściej offline (24 h)</h3>'
+                    f'<div class="chips">{chips}</div></div>'
+                    if summary else "")
+
+    trs = "".join(
+        f"<tr><td class='age'>{e(r['at'])}</td>"
+        f"<td class='host'><a class='host' href='/awaria/netlog?host="
+        f"{urllib.parse.quote(r['hostname'])}'>{e(r['hostname'])}</a></td>"
+        f"<td><span class='badge "
+        f"{NET_EVENT_BADGE.get(r['event'], 'b-degr')}'>{e(r['event'])}"
+        f"</span></td><td class='muted'>{e(r['detail'] or '')}</td></tr>"
+        for r in rows)
+    table = (f"<table><tr><th>Kiedy</th><th>Drukarka</th><th>Zdarzenie</th>"
+             f"<th>Szczegóły</th></tr>{trs}</table>" if rows else
+             '<div class="empty">Brak zdarzeń sieciowych.</div>')
+
+    filter_note = (f'<p class="muted">Filtr: <b>{e(host)}</b> — '
+                   f'<a href="/awaria/netlog">pokaż wszystkie</a></p>'
+                   if host else "")
+    body = f"""<h2>Log sieci</h2>
+    <p class="muted">Rozłączenia (osobno oznaczone gdy przerwały druk), powroty,
+    zmiany adresów IP i automatyczne ponowne wykrycia (mDNS), oraz utraty
+    telemetrii w trakcie druku. Ostatnie 500 zdarzeń.</p>
+    {summary_html}{filter_note}{table}"""
+    return page("GRIZZLA — log sieci", ("", body))
 
 
 def render_history(db, query):
