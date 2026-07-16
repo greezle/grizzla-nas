@@ -10,7 +10,10 @@ from awaria.services.notifications import notify
 ACTIONS_OPEN = ("AWARIA-BLOKADA", "AWARIA")
 
 
-ACTIONS = ACTIONS_OPEN + ("NOTATKA", "NAPRAWIONO")
+# PRZERWA = print interruption (filament runout, error pause) reported by
+# fw >= 11253: stored in events with the print-session link, no failure and
+# no notification - the dashboard display comes later
+ACTIONS = ACTIONS_OPEN + ("NOTATKA", "NAPRAWIONO", "PRZERWA")
 
 
 def handle_event(data, client_ip=None):
