@@ -36,3 +36,14 @@ FARM_HOST_RE = re.compile(
 
 
 MANIFEST_PATH = "/srv/gcode/MANIFEST.txt"
+
+
+# "Inna awaria" - the catch-all error whose failure comments are mirrored to
+# the printer's yellow AWARIA screen (the label alone explains nothing, so
+# maintenance annotates: "czekamy na części", "nie ruszać do piątku", ...)
+SCREEN_NOTE_ERROR_ID = 9
+
+
+# byte cap for the note served to printers: the firmware buffer is 160 B and
+# the yellow screen fits a few lines; cut happens at a UTF-8 boundary
+SCREEN_NOTE_MAX_BYTES = 150

@@ -438,9 +438,25 @@ def migrate_5_print_kind(db):
               AND COALESCE(f.closed_ts, 1 << 62) >= print_log.started_ts)""")
 
 
+def migrate_6_failure_comments(db):
+    """Running commentary on a failure ("czekamy na heatbreak", "naprawa po
+    weekendzie"), separate from the final repair_note. For the "Inna awaria"
+    catch-all (SCREEN_NOTE_ERROR_ID) the newest comment is also served to the
+    printer and shown on its yellow AWARIA screen, where the generic label
+    says nothing useful by itself."""
+    db.execute("""CREATE TABLE IF NOT EXISTS failure_comments (
+        id INTEGER PRIMARY KEY,
+        failure_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        created_ts INTEGER,
+        text TEXT NOT NULL)""")
+    db.execute("CREATE INDEX IF NOT EXISTS failure_comments_failure"
+               " ON failure_comments(failure_id)")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
-    migrate_4_printer_mac, migrate_5_print_kind
+    migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments
 ]
 
 

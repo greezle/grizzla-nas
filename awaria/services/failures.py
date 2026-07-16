@@ -2,6 +2,7 @@
 import json
 import urllib.parse
 
+from awaria.config import SCREEN_NOTE_ERROR_ID, SCREEN_NOTE_MAX_BYTES
 from awaria.db import db_lock, open_db, now_pair, session_at
 from awaria.services import bus
 from awaria.services.notifications import notify
@@ -107,3 +108,21 @@ def handle_event(data, client_ip=None):
         db.commit()
     bus.publish("failures", host)
     return 200, {"ok": True}
+
+
+def screen_note_for(db, host):
+    """Text the printer shows on its yellow AWARIA screen: the newest comment
+    across the host's open "Inna awaria" failures. Empty when none apply -
+    the printer clears its note. Cut to the firmware's buffer at a UTF-8
+    character boundary."""
+    row = db.execute(
+        "SELECT c.text FROM failure_comments c"
+        " JOIN failures f ON f.id = c.failure_id"
+        " WHERE f.hostname=? AND f.category=? AND f.closed_at IS NULL"
+        " ORDER BY c.id DESC LIMIT 1",
+        (host, SCREEN_NOTE_ERROR_ID)).fetchone()
+    if not row:
+        return ""
+    text = " ".join(row["text"].split())  # one line, collapsed whitespace
+    return text.encode("utf-8")[:SCREEN_NOTE_MAX_BYTES].decode(
+        "utf-8", "ignore")

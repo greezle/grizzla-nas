@@ -13,7 +13,7 @@ from awaria.config import STATIC_DIR, FARM_HOST_RE
 from awaria.db import db_lock, net_log, open_db, now_str, now_pair, to_epoch_or_none
 from awaria.services import bus
 from awaria.services.catalog import render_catalog, save_def, reorder_defs
-from awaria.services.failures import handle_event
+from awaria.services.failures import handle_event, screen_note_for
 from awaria.services.telemetry import (history_columns, samples_columns)
 from awaria.web.pages import (page, render_home, render_printer,
                               render_failure, render_components,
@@ -124,6 +124,34 @@ class Handler(BaseHTTPRequestHandler):
     HTML = "text/html; charset=utf-8"
     JSON = "application/json"
 
+    def printer_checkin(self, db):
+        """Printers identify themselves on catalog/screen-note GETs via the
+        X-Printer header -> hostname/IP discovery for the ping worker plus a
+        liveness touch. Only farm-scheme or already-known names are
+        registered: the header is client-supplied and ends up in pages and
+        JS. Returns the hostname, or None when absent/unregistered."""
+        printer = (self.headers.get("X-Printer") or "").strip()[:32]
+        if not printer or printer == "?" or not (
+                FARM_HOST_RE.match(printer)
+                or db.execute("SELECT 1 FROM printers WHERE hostname=?",
+                              (printer, )).fetchone()):
+            return None
+        db.execute("INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
+                   (printer, ))
+        new_ip = self.headers.get("X-Forwarded-For")
+        old = db.execute("SELECT last_ip FROM printers WHERE hostname=?",
+                         (printer, )).fetchone()
+        if new_ip and old and old["last_ip"] and old["last_ip"] != new_ip:
+            net_log(db, printer, "ip_change",
+                    f"{old['last_ip']} -> {new_ip} (check-in)")
+        now, now_ts = now_pair()
+        db.execute(
+            "UPDATE printers SET last_seen=?, last_seen_ts=?,"
+            " last_ip=COALESCE(?, last_ip) WHERE hostname=?",
+            (now, now_ts, new_ip, printer))
+        db.commit()
+        return printer
+
     def render_get(self, db, path, query):
         """Resolve a GET route to (status, content, content-type), or None
         for 404. Runs with db_lock held - must not touch the client socket."""
@@ -138,32 +166,14 @@ class Handler(BaseHTTPRequestHandler):
                 " ORDER BY blocking DESC, opened_at").fetchall()
             return 200, json.dumps([dict(r) for r in rows]), self.JSON
         if path == "/awaria/api/catalog":
-            # printers identify themselves here at boot + after every
-            # g-code sync -> hostname/IP discovery for the ping worker.
-            # Only farm-scheme or already-known names are registered: the
-            # header is client-supplied and ends up in pages and JS.
-            printer = (self.headers.get("X-Printer") or "").strip()[:32]
-            if printer and printer != "?" and (
-                    FARM_HOST_RE.match(printer)
-                    or db.execute("SELECT 1 FROM printers WHERE hostname=?",
-                                  (printer, )).fetchone()):
-                db.execute(
-                    "INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
-                    (printer, ))
-                new_ip = self.headers.get("X-Forwarded-For")
-                old = db.execute(
-                    "SELECT last_ip FROM printers WHERE hostname=?",
-                    (printer, )).fetchone()
-                if new_ip and old and old["last_ip"] and old["last_ip"] != new_ip:
-                    net_log(db, printer, "ip_change",
-                            f"{old['last_ip']} -> {new_ip} (check-in)")
-                now, now_ts = now_pair()
-                db.execute(
-                    "UPDATE printers SET last_seen=?, last_seen_ts=?,"
-                    " last_ip=COALESCE(?, last_ip) WHERE hostname=?",
-                    (now, now_ts, new_ip, printer))
-                db.commit()
+            self.printer_checkin(db)
             return 200, render_catalog(db), "text/plain; charset=utf-8"
+        if path == "/awaria/api/screen_note":
+            # polled by printers with an open "Inna awaria": the newest
+            # dashboard comment becomes the note on the yellow screen
+            printer = self.printer_checkin(db)
+            note = screen_note_for(db, printer) if printer else ""
+            return 200, note, "text/plain; charset=utf-8"
         if path == "/awaria/defs":
             return 200, render_defs_list(db), self.HTML
         if path == "/awaria/defs/new":
@@ -278,6 +288,40 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(303)
                 self.send_header("Location", location)
                 self.end_headers()
+
+            m = re.fullmatch(r"/awaria/failure/(\d+)/comment", path)
+            if m:
+                fid = int(m.group(1))
+                text = " ".join(field("text")[:500].split())
+                with db_lock, open_db() as db:
+                    f = db.execute("SELECT hostname FROM failures WHERE id=?",
+                                   (fid, )).fetchone()
+                    if not f:
+                        return self.send_page(404, "not found", "text/plain")
+                    if text:
+                        now, now_ts = now_pair()
+                        db.execute(
+                            "INSERT INTO failure_comments(failure_id,"
+                            " created_at, created_ts, text) VALUES (?,?,?,?)",
+                            (fid, now, now_ts, text))
+                        db.commit()
+                bus.publish("failures", f["hostname"])
+                return redirect(f"/awaria/failure/{fid}")
+
+            m = re.fullmatch(r"/awaria/failure/(\d+)/comment_del", path)
+            if m:
+                fid = int(m.group(1))
+                with db_lock, open_db() as db:
+                    f = db.execute("SELECT hostname FROM failures WHERE id=?",
+                                   (fid, )).fetchone()
+                    if not f:
+                        return self.send_page(404, "not found", "text/plain")
+                    db.execute(
+                        "DELETE FROM failure_comments WHERE id=? AND failure_id=?",
+                        (int(field("id", "0")), fid))
+                    db.commit()
+                bus.publish("failures", f["hostname"])
+                return redirect(f"/awaria/failure/{fid}")
 
             m = re.fullmatch(r"/awaria/failure/(\d+)/repair", path)
             if m:

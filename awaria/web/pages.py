@@ -6,7 +6,8 @@ import time
 import urllib.parse
 from datetime import datetime, timedelta
 
-from awaria.config import OFFSITE_STAMP, OFFSITE_MAX_AGE_S
+from awaria.config import (OFFSITE_STAMP, OFFSITE_MAX_AGE_S,
+                           SCREEN_NOTE_ERROR_ID)
 from awaria.db import db_lock, open_db, now_str, to_epoch
 from awaria.services.printers import is_online
 from awaria.services.telemetry import (FINE_EVERY_S, FINE_KEEP_S, live_of,
@@ -890,6 +891,22 @@ def render_failure(db, fid):
     close_box = "" if f["closed_at"] else \
         '<p><label class="check"><input type="checkbox" name="close" checked> zamknij awarię (naprawa zakończona)</label></p>'
 
+    comments = db.execute(
+        "SELECT * FROM failure_comments WHERE failure_id=? ORDER BY id",
+        (fid, )).fetchall()
+    on_screen = f["category"] == SCREEN_NOTE_ERROR_ID and not f["closed_at"]
+    comment_rows = "".join(f"""<li>{e(c['created_at'][:16])} — {e(c['text'])}
+        {'<span class="chip" style="background:#b37800;font-size:11px" title="Ten komentarz jest teraz wyświetlany na żółtym ekranie drukarki">na ekranie</span>' if on_screen and c['id'] == comments[-1]['id'] else ''}
+        <form method="post" action="/awaria/failure/{fid}/comment_del" style="display:inline"
+              onsubmit="return confirm('Usunąć komentarz?')">
+          <input type="hidden" name="id" value="{c['id']}">
+          <button class="chip-btn" style="color:#b00" title="Usuń komentarz">&times;</button>
+        </form></li>""" for c in comments) \
+        or '<li class="muted">brak komentarzy</li>'
+    screen_hint = ('<p class="muted">Najnowszy komentarz pojawia się jako '
+                   'notatka na żółtym ekranie AWARIA tej drukarki.</p>'
+                   if on_screen else '')
+
     body = f"""
     <p><a href="/awaria/printer/{quoted_host}">&larr; Drukarka {e(f['hostname'])}</a></p>
     <h2>Awaria: {e(f['label'])} {status}</h2>
@@ -897,6 +914,16 @@ def render_failure(db, fid):
       <div class="detail" style="font-size:15px">{e(f['detail'])}</div>
       {session_info}
       {closed_info}
+    </div>
+    <h2>Komentarze</h2>
+    <div class="card">
+      {screen_hint}
+      <ul>{comment_rows}</ul>
+      <form method="post" action="/awaria/failure/{fid}/comment" class="inline-form">
+        <input name="text" size="50" maxlength="500" required
+               placeholder="np. czekamy na części — nie ruszać">
+        <input type="submit" value="Dodaj komentarz">
+      </form>
     </div>
     <h2>Naprawa</h2>
     <div class="card">
