@@ -38,7 +38,7 @@ SEVERITY_NAMES = {
 
 
 # firmware buffer limits, in BYTES of UTF-8 (Polish letters take 2)
-LABEL_MAX_B, QUESTION_MAX_B, ANSWER_MAX_B = 39, 47, 19
+LABEL_MAX_B, QUESTION_MAX_B, ANSWER_MAX_B = 39, 47, 39  # answers grew: list rows since fw 11252 (was 19-byte buttons)
 
 
 def utf8_clamp(text, max_bytes):

@@ -1458,7 +1458,7 @@ def render_def_form(db, def_row):
         for ai in range(3):
             a = answers[ai] if ai < len(answers) else {}
             a_rows.append(f"""<tr><td>Odpowiedź {ai + 1}</td>
-                <td><input name="q{qi}_a{ai}_text" maxlength="19" size="22"
+                <td><input name="q{qi}_a{ai}_text" maxlength="39" size="42"
                      value="{e(a.get('text', ''))}" placeholder="maks. {ANSWER_MAX_B} bajtów"></td>
                 <td>ważność po tej odpowiedzi: {sev_select(f'q{qi}_a{ai}_sev', a.get('severity'), True)}</td></tr>"""
                           )
