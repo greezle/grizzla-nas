@@ -380,6 +380,18 @@ def track_gcode_release(host, release):
         db.commit()
 
 
+def same_print(stored, incoming):
+    """A stored session path and an incoming print_filename mean the same
+    print when equal - or when one is the other's basename: the directory
+    streams as a separate metric, so the first packet after a server restart
+    (empty LIVE) carries the bare file name while the session row already
+    holds the full library path. Exact-match adoption here split every
+    running print into a fresh session on each deploy (field report
+    2026-08-01, all printers 'started 2 min ago')."""
+    return (stored == incoming or stored.endswith("/" + incoming)
+            or incoming.endswith("/" + stored))
+
+
 def track_print_sessions(host, fname):
     prev = LAST_FILE.get(host)
     if fname == prev:
@@ -401,15 +413,17 @@ def track_print_sessions(host, fname):
         if prev is None and fname:
             # server (re)start mid-print: adopt a matching open session
             row = db.execute(
-                "SELECT id FROM print_log WHERE hostname=? AND file=?"
+                "SELECT id, file FROM print_log WHERE hostname=?"
                 " AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
-                (host, fname)).fetchone()
-            if row:
+                (host, )).fetchone()
+            if row and same_print(row["file"], fname):
                 return
             row = db.execute(
-                "SELECT id, ended_ts FROM print_log WHERE hostname=? AND file=?"
+                "SELECT id, file, ended_ts FROM print_log WHERE hostname=?"
                 " AND ended_ts >= ? ORDER BY id DESC LIMIT 1",
-                (host, fname, now_ts - 1800)).fetchone()
+                (host, now_ts - 1800)).fetchone()
+            if row and not same_print(row["file"], fname):
+                row = None
             if row:
                 # dropped off the network mid-print and came back: the
                 # watchdog-closed session continues instead of splitting
