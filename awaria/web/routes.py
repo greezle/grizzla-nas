@@ -15,11 +15,12 @@ from awaria.services import bus
 from awaria.services.catalog import render_catalog, save_def, reorder_defs
 from awaria.services.failures import handle_event, screen_note_for
 from awaria.services.telemetry import (history_columns, samples_columns)
+from awaria.web.exports import export_failures_csv, export_failures_xlsx
 from awaria.web.pages import (page, render_home, render_printer,
-                              render_failure, render_components,
-                              render_history, render_stats, render_defs_list,
-                              render_def_form, render_netlog,
-                              render_telemetry)
+                              render_failure, render_failures_list,
+                              render_components, render_history, render_stats,
+                              render_defs_list, render_def_form,
+                              render_netlog, render_telemetry)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -28,12 +29,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # quiet; nginx has the access log
 
-    def send_page(self, code, content, ctype="text/html; charset=utf-8"):
+    def send_page(self, code, content, ctype="text/html; charset=utf-8",
+                  filename=None):
         data = content.encode() if isinstance(content, str) else content
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition",
+                             f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(data)
 
@@ -190,6 +195,18 @@ class Handler(BaseHTTPRequestHandler):
             if content := render_failure(db, int(m.group(1))):
                 return 200, content, self.HTML
             return None
+        if path == "/awaria/failures":
+            return 200, render_failures_list(db, query), self.HTML
+        if path == "/awaria/failures.csv":
+            return (200, export_failures_csv(db, query),
+                    "text/csv; charset=utf-8", "awarie.csv")
+        if path == "/awaria/failures.xlsx":
+            data = export_failures_xlsx(db, query)
+            if data is None:
+                return (501, "openpyxl nie jest zainstalowany na serwerze",
+                        "text/plain; charset=utf-8")
+            return (200, data, "application/vnd.openxmlformats-officedocument"
+                    ".spreadsheetml.sheet", "awarie.xlsx")
         if path == "/awaria/components":
             return 200, render_components(db), self.HTML
         if path == "/awaria/netlog":

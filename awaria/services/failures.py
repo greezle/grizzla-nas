@@ -3,7 +3,8 @@ import json
 import urllib.parse
 
 from awaria.config import SCREEN_NOTE_ERROR_ID, SCREEN_NOTE_MAX_BYTES
-from awaria.db import db_lock, open_db, now_pair, session_at
+from awaria.db import (db_lock, open_db, now_pair, session_at,
+                       to_epoch_or_none)
 from awaria.services import bus
 from awaria.services.notifications import notify
 
@@ -126,3 +127,78 @@ def screen_note_for(db, host):
     text = " ".join(row["text"].split())  # one line, collapsed whitespace
     return text.encode("utf-8")[:SCREEN_NOTE_MAX_BYTES].decode(
         "utf-8", "ignore")
+
+
+PAGE_SIZE = 50  # browser rows per page; exports ignore paging
+
+
+def failures_filter(query):
+    """WHERE clause + params for the failures browser and its exports, from
+    the URL query (parse_qs dict). Free text searches the label, detail,
+    repair note and the whole comment thread."""
+
+    def qget(name):
+        return (query.get(name) or [""])[0].strip()
+
+    where, params = [], []
+    host = qget("host")[:32]
+    sec = qget("sec")[:1]
+    if host:
+        where.append("f.hostname = ?")
+        params.append(host)
+    elif sec:
+        where.append("f.hostname LIKE ?")
+        params.append(sec + "%")
+    try:
+        where.append("f.category = ?")
+        params.append(int(qget("cat")))
+    except ValueError:
+        where.pop()
+    state = qget("state")
+    if state == "open":
+        where.append("f.closed_at IS NULL")
+    elif state == "closed":
+        where.append("f.closed_at IS NOT NULL")
+    elif state == "blocking":
+        where.append("f.closed_at IS NULL AND f.blocking = 1")
+    ts_from = to_epoch_or_none(qget("from"))
+    if ts_from is not None:
+        where.append("f.opened_ts >= ?")
+        params.append(ts_from)
+    ts_to = to_epoch_or_none(qget("to"))
+    if ts_to is not None:
+        where.append("f.opened_ts < ?")
+        params.append(ts_to + 86400)  # inclusive end date
+    text = qget("q")[:80]
+    if text:
+        like = f"%{text}%"
+        where.append(
+            "(f.label LIKE ? OR f.detail LIKE ? OR f.repair_note LIKE ?"
+            " OR EXISTS (SELECT 1 FROM failure_comments c"
+            "            WHERE c.failure_id = f.id AND c.text LIKE ?))")
+        params += [like] * 4
+    return (" WHERE " + " AND ".join(where)) if where else "", params
+
+
+def failures_select(db, query, limit=None, offset=0):
+    """Filtered failure rows for the browser page / exports, newest first,
+    with the comment count and the interrupted print attached."""
+    where, params = failures_filter(query)
+    tail = " LIMIT ? OFFSET ?" if limit is not None else ""
+    return db.execute(
+        "SELECT f.*,"
+        " (SELECT COUNT(*) FROM failure_comments c WHERE c.failure_id = f.id)"
+        "   AS ncomments,"
+        " (SELECT GROUP_CONCAT(c.text, ' | ') FROM failure_comments c"
+        "   WHERE c.failure_id = f.id) AS comments_joined,"
+        " p.file AS print_file"
+        " FROM failures f"
+        " LEFT JOIN print_log p ON p.id = f.print_session_id"
+        f"{where} ORDER BY f.id DESC{tail}",
+        params + ([limit, offset] if limit is not None else [])).fetchall()
+
+
+def failures_count(db, query):
+    where, params = failures_filter(query)
+    return db.execute(f"SELECT COUNT(*) c FROM failures f{where}",
+                      params).fetchone()["c"]

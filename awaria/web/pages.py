@@ -261,6 +261,7 @@ def page(title, body, refresh=None):
 <nav id="drawer">
   <div class="brand">GRIZZLA</div>
   <a href="/awaria/">Panel serwisowy</a>
+  <a href="/awaria/failures">Awarie</a>
   <a href="/awaria/history">Historia</a>
   <a href="/awaria/stats">Statystyki</a>
   <a href="/awaria/netlog">Log sieci</a>
@@ -940,6 +941,112 @@ def render_failure(db, fid):
       </form>
     </div>"""
     return page(f"GRIZZLA — awaria {f['hostname']}", ("", body))
+
+
+def render_failures_list(db, query):
+    """Archive browser: every failure ever recorded, filterable by printer /
+    section / category / state / date / free text, paginated, exportable
+    (the export links carry the active filter)."""
+    from awaria.services.failures import (PAGE_SIZE, failures_count,
+                                          failures_select)
+
+    def qget(name):
+        return (query.get(name) or [""])[0].strip()
+
+    total = failures_count(db, query)
+    try:
+        pageno = max(1, int(qget("page") or "1"))
+    except ValueError:
+        pageno = 1
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    pageno = min(pageno, pages)
+    rows = failures_select(db, query, PAGE_SIZE, (pageno - 1) * PAGE_SIZE)
+
+    printers = [
+        r["hostname"] for r in db.execute(
+            "SELECT hostname FROM printers ORDER BY length(hostname), hostname")
+    ]
+    host_sel = qget("host")
+    host_opts = '<option value="">— drukarka —</option>' + "".join(
+        f'<option{" selected" if h == host_sel else ""}>{e(h)}</option>'
+        for h in printers)
+    sec_sel = qget("sec")
+    sections = sorted({h[0].upper() for h in printers if h and h[0].isalpha()})
+    sec_opts = '<option value="">— sekcja —</option>' + "".join(
+        f'<option{" selected" if s == sec_sel else ""}>{e(s)}</option>'
+        for s in sections)
+    cat_sel = qget("cat")
+    cat_opts = '<option value="">— kategoria —</option>' + "".join(
+        f'<option value="{d["id"]}"{" selected" if str(d["id"]) == cat_sel else ""}>'
+        f'{e(d["label"])}</option>' for d in db.execute(
+            "SELECT id, label FROM error_defs ORDER BY position, id"))
+    state_sel = qget("state")
+    state_opts = "".join(
+        f'<option value="{v}"{" selected" if v == state_sel else ""}>{t}</option>'
+        for v, t in (("", "— stan —"), ("open", "otwarte"),
+                     ("blocking", "otwarte blokujące"), ("closed",
+                                                         "naprawione")))
+
+    # filter state without the page number: reused by exports + pagination
+    qs = urllib.parse.urlencode({
+        k: v[0]
+        for k, v in query.items() if v and v[0] and k != "page"
+    })
+
+    trs = []
+    for f in rows:
+        detail_bits = []
+        if f["detail"]:
+            detail_bits.append(e(f["detail"][:90]))
+        if f["ncomments"]:
+            detail_bits.append(f'<span class="muted">💬 {f["ncomments"]}</span>')
+        trs.append(
+            f"<tr><td class='age'>{e(f['opened_at'][:16])}</td>"
+            f"<td class='host'><a class='host' href='/awaria/printer/"
+            f"{urllib.parse.quote(f['hostname'])}'>{e(f['hostname'])}</a></td>"
+            f"<td>{e(f['label'])} {state_badge_of(f)}</td>"
+            f"<td>{fmt_age(f['opened_at'], f['closed_at'])}</td>"
+            f"<td class='muted'>{' '.join(detail_bits)}</td>"
+            f"<td><a href='/awaria/failure/{f['id']}'>szczegóły</a></td></tr>")
+    table = (
+        "<table><tr><th>Otwarta</th><th>Drukarka</th><th>Awaria</th>"
+        f"<th>Czas</th><th>Szczegóły</th><th></th></tr>{''.join(trs)}</table>"
+        if rows else '<div class="empty">Nic nie pasuje do filtrów.</div>')
+
+    def page_link(n, text=None):
+        amp = "&" if qs else ""
+        return f'<a href="/awaria/failures?{qs}{amp}page={n}">{text or n}</a>'
+
+    nav_bits = []
+    if pageno > 1:
+        nav_bits.append(page_link(pageno - 1, "&larr; nowsze"))
+    nav_bits.append(f"strona {pageno} z {pages} ({total} awarii)")
+    if pageno < pages:
+        nav_bits.append(page_link(pageno + 1, "starsze &rarr;"))
+    pager = f'<p class="muted">{" &nbsp; ".join(nav_bits)}</p>'
+
+    amp = "&" if qs else ""
+    body = f"""<h2>Awarie — archiwum</h2>
+    <div class="card">
+      <form method="get" action="/awaria/failures" class="inline-form">
+        <select name="host">{host_opts}</select>
+        <select name="sec">{sec_opts}</select>
+        <select name="cat">{cat_opts}</select>
+        <select name="state">{state_opts}</select>
+        od <input type="date" name="from" value="{e(qget('from'))}">
+        do <input type="date" name="to" value="{e(qget('to'))}">
+        <input name="q" size="18" maxlength="80" placeholder="szukany tekst"
+               value="{e(qget('q'))}">
+        <input type="submit" value="Filtruj">
+        <a href="/awaria/failures">wyczyść</a>
+      </form>
+      <p class="muted">Eksport wyników:
+        <a href="/awaria/failures.xlsx?{qs}">Excel (.xlsx)</a> ·
+        <a href="/awaria/failures.csv?{qs}">CSV</a>
+        — szukany tekst przeszukuje też notatki i komentarze.</p>
+    </div>
+    {pager}{table}{pager if rows else ''}"""
+    return page("GRIZZLA — archiwum awarii", ("", body))
 
 
 def render_components(db):
