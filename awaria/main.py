@@ -13,7 +13,7 @@ from http.server import ThreadingHTTPServer
 
 from awaria import db
 from awaria.config import LISTEN
-from awaria.services import printers, telemetry
+from awaria.services import gcode_meta, printers, telemetry
 from awaria.web.routes import Handler
 
 
@@ -24,4 +24,5 @@ def main():
     threading.Thread(target=printers.ping_worker, daemon=True).start()
     threading.Thread(target=telemetry.metrics_worker, daemon=True).start()
     threading.Thread(target=telemetry.telemetry_logger, daemon=True).start()
+    threading.Thread(target=gcode_meta.scanner_worker, daemon=True).start()
     ThreadingHTTPServer(LISTEN, Handler).serve_forever()

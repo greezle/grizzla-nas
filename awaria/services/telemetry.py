@@ -14,6 +14,7 @@ from datetime import datetime
 from awaria.config import TELEMETRY_DB, METRICS_PORT
 from awaria.db import classify_print, db_lock, net_log, open_db, now_str, now_pair, material_of_print
 from awaria.services import bus
+from awaria.services.gcode_meta import meta_for
 from awaria.services.notifications import notify
 
 
@@ -442,24 +443,27 @@ def learned_seconds(db, fname):
 
 def infer_result(fname, started_ts, ended_ts, db=None):
     """Fallback verdict when the stream never witnessed the end (reset,
-    network loss, pre-11247 firmware, restart gaps): session length vs the
-    expected duration - the sliced time in the file name when present, else
-    the file's typical duration learned from the fleet's history (needs a
-    db handle). Trailing '?' = inferred, shown as such. The 50-90% middle
-    ground stays unknown - pauses stretch real prints, late aborts exist."""
+    network loss, restart gaps): the print either ran about as long as it
+    should have, or it did not. Expected duration comes from the g-code
+    file itself (slicer estimate scanned into gcode_meta), falling back to
+    the time in the file name, then to the file's typical duration in
+    fleet history. Farm rule: more than 2% shorter than expected =
+    cancelled, end of story. Trailing '?' = inferred, shown as such."""
     if not started_ts or not ended_ts:
         return None
-    expected = expected_seconds(fname)
-    if (not expected or expected < 600) and db is not None:
+    expected = None
+    if db is not None:
+        meta = meta_for(db, fname)
+        if meta and meta["est_s"]:
+            expected = meta["est_s"]
+    if expected is None:
+        expected = expected_seconds(fname)
+    if expected is None and db is not None:
         expected = learned_seconds(db, fname)
-    if not expected or expected < 600:
+    if not expected:
         return None
     actual = ended_ts - started_ts
-    if actual >= 0.9 * expected:
-        return "finished?"
-    if actual < 0.5 * expected:
-        return "aborted?"
-    return None
+    return "finished?" if actual >= 0.98 * expected else "aborted?"
 
 
 def stamp_late_result(host, state):

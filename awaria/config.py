@@ -38,6 +38,12 @@ FARM_HOST_RE = re.compile(
 MANIFEST_PATH = "/srv/gcode/MANIFEST.txt"
 
 
+# the g-code library itself (SMB share the engineers publish from) - the
+# metadata scanner reads slicer estimates/filament/sheet straight from
+# the files, paths relative to this root match print_log.file
+GCODE_MASTER = "/srv/gcode/master"
+
+
 # "Inna awaria" - the catch-all error whose failure comments are mirrored to
 # the printer's yellow AWARIA screen (the label alone explains nothing, so
 # maintenance annotates: "czekamy na części", "nie ruszać do piątku", ...)

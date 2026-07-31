@@ -463,10 +463,27 @@ def migrate_7_print_result(db):
     add_column(db, "print_log", "result TEXT")
 
 
+def migrate_8_gcode_meta(db):
+    """Slicer metadata read straight from the g-code files on the SSD:
+    the authoritative estimated print time (the 2%-short rule for marking
+    cancelled prints), filament type/weight and the target print sheet
+    (M9203 P<n> in the start g-code). Refreshed by the scanner thread;
+    rows keyed by the library-relative path that print_log.file uses."""
+    db.execute("""CREATE TABLE IF NOT EXISTS gcode_meta (
+        path TEXT PRIMARY KEY,
+        size INTEGER NOT NULL,
+        mtime_ns INTEGER NOT NULL,
+        est_s INTEGER,
+        filament TEXT,
+        fil_g REAL,
+        sheet TEXT,
+        scanned_at TEXT)""")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
     migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments,
-    migrate_7_print_result
+    migrate_7_print_result, migrate_8_gcode_meta
 ]
 
 

@@ -273,6 +273,7 @@ def page(title, body, refresh=None):
   <a href="/awaria/">Panel serwisowy</a>
   <a href="/awaria/failures">Awarie</a>
   <a href="/awaria/history">Historia</a>
+  <a href="/awaria/files">Pliki g-code</a>
   <a href="/awaria/stats">Statystyki</a>
   <a href="/awaria/netlog">Log sieci</a>
   <a href="/awaria/defs">Katalog błędów</a>
@@ -1481,6 +1482,31 @@ def selected_hosts_of(query, known):
     return {h for h in raw.split(",") if h in kset}
 
 
+def fmt_dur(seconds):
+    if not seconds:
+        return "—"
+    h, m = int(seconds) // 3600, (int(seconds) % 3600) // 60
+    return f"{h} h {m} min" if h else f"{m} min"
+
+
+def gcode_meta_index(db):
+    """(by_path, by_basename) lookup of the scanned g-code metadata; the
+    basename side serves pre-11244 sessions that logged bare file names
+    (ambiguous basenames resolve to None)."""
+    by_path, by_base = {}, {}
+    for r in db.execute("SELECT * FROM gcode_meta"):
+        by_path[r["path"]] = r
+        by_base.setdefault(r["path"].rsplit("/", 1)[-1].lower(),
+                           []).append(r)
+    return by_path, {k: v[0] for k, v in by_base.items() if len(v) == 1}
+
+
+def meta_of_print(meta_idx, fname):
+    by_path, by_base = meta_idx
+    fname = str(fname or "")
+    return by_path.get(fname) or by_base.get(fname.rsplit("/", 1)[-1].lower())
+
+
 def render_prints_partial(db, query):
     """Just the prints table - the map/range controls refetch this."""
     known = known_printers(db)
@@ -1505,23 +1531,30 @@ def render_prints_partial(db, query):
         return '<div class="empty">Brak wydruków w wybranym zakresie.</div>'
     now = int(time.time())
     telemetry_floor = now - FINE_KEEP_S
+    meta_idx = gcode_meta_index(db)
     trs = []
     for p in rows:
         chart = ('<a href="/awaria/print/%d">wykres</a>' % p["id"] if
                  (p["ended_ts"] or now) >= telemetry_floor else
                  '<span class="muted" title="Telemetria już wygasła">—</span>')
+        meta = meta_of_print(meta_idx, p["file"])
+        filament = (meta["filament"] if meta and meta["filament"] else
+                    p["material"]) or "—"
+        sheet = meta["sheet"] if meta and meta["sheet"] else "—"
         trs.append(f"""<tr>
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
             <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b>{kind_badge(p)}</td>
             <td class="age">{e(p['started_at'])}</td>
             <td>{fmt_age(p['started_at'], p['ended_at'])}</td>
+            <td>{e(filament)}</td><td>{e(sheet)}</td>
             <td>{result_badge(p)}</td><td>{chart}</td></tr>""")
     note = (f'<p class="muted">Pokazano pierwsze {PRINTS_LIMIT} wydruków — '
             'zawęź zakres albo wybór drukarek.</p>' if truncated else '')
     return (f'<p class="muted">{len(rows)} wydruków'
             f'{" (lista obcięta)" if truncated else ""}</p>'
             '<table><tr><th>Drukarka</th><th>Plik</th><th>Start</th>'
-            f'<th>Czas</th><th>Wynik</th><th></th></tr>{"".join(trs)}</table>'
+            '<th>Czas</th><th>Filament</th><th>Podkładka</th>'
+            f'<th>Wynik</th><th></th></tr>{"".join(trs)}</table>'
             f'{note}')
 
 
@@ -1692,6 +1725,22 @@ def render_print_detail(db, pid):
     quoted = urllib.parse.quote(p["hostname"])
     material = (f' — materiał: <b>{e(p["material"])}</b>'
                 if p["material"] else '')
+    gm = meta_of_print(gcode_meta_index(db), p["file"])
+    bits = []
+    if gm:
+        if gm["filament"]:
+            grams = f' ({gm["fil_g"]:.0f} g)' if gm["fil_g"] else ""
+            bits.append(f'filament <b>{e(gm["filament"])}</b>{grams}')
+            material = ""  # the path-guessed material is redundant now
+        if gm["sheet"]:
+            bits.append(f'podkładka <b>{e(gm["sheet"])}</b>')
+        if gm["est_s"]:
+            pct = ""
+            if p["ended_ts"] and p["started_ts"]:
+                ratio = 100 * (p["ended_ts"] - p["started_ts"]) / gm["est_s"]
+                pct = f' — wydrukowano <b>{ratio:.0f}%</b> szacowanego czasu'
+            bits.append(f'szacowany czas <b>{fmt_dur(gm["est_s"])}</b>{pct}')
+    gcode_info = f'<p>{" — ".join(bits)}</p>' if bits else ""
     meta = f"""
     <p><a href="/awaria/history">&larr; Historia wydruków</a></p>
     <h2>Wydruk: {e(display_name(p['file']))} {result_badge(p)}{kind_badge(p)}</h2>
@@ -1701,6 +1750,7 @@ def render_print_detail(db, pid):
       <p>Start: <b>{e(p['started_at'])}</b> — koniec:
          <b>{e(p['ended_at'] or 'w trakcie')}</b> —
          czas: <b>{fmt_age(p['started_at'], p['ended_at'])}</b></p>
+      {gcode_info}
     </div>"""
     if end < now - FINE_KEEP_S:
         return page(
@@ -1776,6 +1826,31 @@ def render_print_detail(db, pid):
     }})();
     </script>"""
     return page(f"GRIZZLA — wydruk {p['hostname']}", ("", meta + chart))
+
+
+def render_files(db):
+    """The g-code library's scanned metadata: slicer estimate, filament,
+    weight and target sheet per file - the reference table behind the
+    2%-short cancelled rule."""
+    rows = db.execute("SELECT * FROM gcode_meta ORDER BY path").fetchall()
+    trs = []
+    for r in rows:
+        grams = f"{r['fil_g']:.0f} g" if r["fil_g"] else "—"
+        trs.append(f"<tr><td>{e(r['path'])}</td>"
+                   f"<td>{fmt_dur(r['est_s'])}</td>"
+                   f"<td>{e(r['filament'] or '—')}</td>"
+                   f"<td>{grams}</td>"
+                   f"<td>{e(r['sheet'] or '—')}</td></tr>")
+    table = ("<table><tr><th>Plik</th><th>Szac. czas</th><th>Filament</th>"
+             f"<th>Zużycie</th><th>Podkładka</th></tr>{''.join(trs)}</table>"
+             if trs else
+             '<div class="empty">Skaner jeszcze nie przeszedł biblioteki.</div>')
+    body = f"""<h2>Pliki g-code ({len(rows)})</h2>
+    <p class="muted">Metadane czytane wprost z plików na NAS (stopka slicera +
+    M9203 w starcie); odświeżane co 15 min. Wydruk krótszy o więcej niż 2% od
+    szacowanego czasu jest oznaczany jako anulowany.</p>
+    {table}"""
+    return page("GRIZZLA — pliki g-code", ("", body))
 
 
 def render_defs_list(db):
