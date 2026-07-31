@@ -31,6 +31,17 @@ FINE_KEEP_S = 4 * 86400
 STALE_PRINT_S = 300
 
 
+# sessions shorter than this are discarded outright - false starts,
+# immediate aborts and setup moves, not prints (user rule 2026-08-01)
+MIN_PRINT_S = 300
+
+
+# a print may run this much shorter than the file's estimate and still
+# count as finished (observed: real prints finish 4-5% ahead of the
+# slicer's estimate); anything shorter was cancelled
+FINISH_TOLERANCE = 0.94
+
+
 # live telemetry from the printers' metrics stream (in-memory only)
 live_lock = threading.Lock()
 
@@ -274,6 +285,12 @@ def telemetry_logger():
                     ended = datetime.fromtimestamp(heard).strftime("%Y-%m-%d %H:%M:%S") \
                         if heard else now_str()
                     ended_ts = int(heard) if heard else now
+                    if ended_ts - (row["started_ts"] or ended_ts) < MIN_PRINT_S:
+                        db.execute("DELETE FROM print_log WHERE id=?",
+                                   (row["id"], ))
+                        LAST_FILE.pop(row["hostname"], None)
+                        closed_any = True
+                        continue
                     db.execute(
                         "UPDATE print_log SET ended_at=?, ended_ts=?,"
                         " result=? WHERE id=?",
@@ -463,7 +480,7 @@ def infer_result(fname, started_ts, ended_ts, db=None):
     if not expected:
         return None
     actual = ended_ts - started_ts
-    return "finished?" if actual >= 0.98 * expected else "aborted?"
+    return "finished?" if actual >= FINISH_TOLERANCE * expected else "aborted?"
 
 
 def stamp_late_result(host, state):
@@ -546,6 +563,11 @@ def track_print_sessions(host, fname, end_state=None):
         for open_row in db.execute(
                 "SELECT id, file, started_ts FROM print_log"
                 " WHERE hostname=? AND ended_at IS NULL", (host, )).fetchall():
+            if now_ts - (open_row["started_ts"] or now_ts) < MIN_PRINT_S:
+                # too short to be a print - discard, not close
+                db.execute("DELETE FROM print_log WHERE id=?",
+                           (open_row["id"], ))
+                continue
             verdict = result or infer_result(open_row["file"],
                                              open_row["started_ts"], now_ts,
                                              db)
