@@ -5,6 +5,7 @@ import re
 import socket
 import sqlite3
 import threading
+import traceback
 import time
 import urllib.parse
 from collections import deque
@@ -102,8 +103,9 @@ def resolve_sender(ip, text):
             " WHERE last_ip=? AND hostname != ?", (ip, host))
         db.execute("UPDATE printers SET last_ip=? WHERE hostname=?",
                    (ip, host))
-        net_log(db, host, "rediscovered",
-                f"{old['last_ip'] if old else '?'} -> {ip} (MAC z telemetrii)")
+        if not old or old["last_ip"] != ip:
+            net_log(db, host, "rediscovered",
+                    f"{old['last_ip'] if old else '?'} -> {ip} (MAC z telemetrii)")
         db.commit()
     with live_lock:
         IP2HOST[ip] = host
@@ -123,78 +125,94 @@ def metrics_worker():
             data, addr = sock.recvfrom(4096)
         except OSError:
             continue
-        text = data.decode("utf-8", "replace")
-        host = resolve_sender(addr[0], text)
-        if not host:
+        try:
+            handle_metrics_packet(data, addr)
+        except Exception:  # noqa: BLE001
+            # one malformed packet or a transiently locked database must
+            # never kill farm telemetry (outage 2026-08-01: a long backfill
+            # held the write lock, the first check-in write raised and this
+            # thread silently died - the whole farm went dark)
+            traceback.print_exc()
+
+
+def handle_metrics_packet(data, addr):
+    text = data.decode("utf-8", "replace")
+    host = resolve_sender(addr[0], text)
+    if not host:
+        return
+    # header: "<pri>1 - <mac> buddy - - - msg=N,tm=...,v=4 " then points
+    header_end = text.find(",v=4 ")
+    if header_end < 0:
+        return
+    values = {}
+    for line in text[header_end + 5:].split("\n"):
+        line = line.strip()
+        name_part, _, rest = line.partition(" ")
+        if not rest:
             continue
-        # header: "<pri>1 - <mac> buddy - - - msg=N,tm=...,v=4 " then points
-        header_end = text.find(",v=4 ")
-        if header_end < 0:
+        fields_str = rest.rsplit(" ",
+                                 1)[0]  # drop the trailing timestamp diff
+        name_tags = name_part.split(",")
+        name, tags = name_tags[0], dict(
+            t.split("=", 1) for t in name_tags[1:] if "=" in t)
+        if tags.get("n", "0") != "0":  # single-tool printers: tool 0 only
             continue
-        values = {}
-        for line in text[header_end + 5:].split("\n"):
-            line = line.strip()
-            name_part, _, rest = line.partition(" ")
-            if not rest:
-                continue
-            fields_str = rest.rsplit(" ",
-                                     1)[0]  # drop the trailing timestamp diff
-            name_tags = name_part.split(",")
-            name, tags = name_tags[0], dict(
-                t.split("=", 1) for t in name_tags[1:] if "=" in t)
-            if tags.get("n", "0") != "0":  # single-tool printers: tool 0 only
-                continue
-            if m := re.fullmatch(r'v="(.*)"', fields_str):
-                values[name] = m.group(1).replace('\\"',
-                                                  '"').replace("\\\\", "\\")
-                continue
-            fields = dict(
-                f.split("=", 1) for f in fields_str.split(",") if "=" in f)
-            raw = fields.get("v", fields.get("value"))
-            if raw is None:
-                continue
-            try:
-                values[name] = float(raw.rstrip("i"))
-            except ValueError:
-                continue
-        if values:
-            with live_lock:
-                entry = LIVE.setdefault(host, {"values": {}})
-                entry["values"].update(values)
-                entry["updated"] = time.time()
-                if any(k in values for k in HISTORY_KEYS):
-                    v = entry["values"]
-                    point = tuple(
-                        v.get(k) if isinstance(v.get(k), float) else None
-                        for k in HISTORY_KEYS)
-                    now_ts = round(time.time())
-                    HISTORY.setdefault(host, deque(maxlen=HISTORY_LEN)).append(
-                        (now_ts, *point))
-                    # persisted tier is throttled to one sample per FINE_EVERY_S
-                    if now_ts - LAST_FINE_TS.get(host, 0) >= FINE_EVERY_S:
-                        LAST_FINE_TS[host] = now_ts
-                        PENDING_FINE.append((host, now_ts, *point))
-        if isinstance(values.get("print_filename"), str):
-            mark_telemetry_since(host)
-            fname = values["print_filename"]
-            with live_lock:
-                v_all = LIVE.get(host, {}).get("values", {})
-                d = v_all.get("print_dir")
-                state = v_all.get("print_state")
-            end_state = None
-            if isinstance(state, str) and state and state not in ("printing",
-                                                                  "paused"):
-                # fw >= 11247 states are authoritative: a finished/aborted/
-                # idle print is over even if a filename still trickles in
-                end_state = state
-                fname = ""
-            if fname and isinstance(d, str) and d:
-                # fw >= 11244 streams the directory too - full library path
-                fname = d.rstrip("/") + "/" + fname
-            track_print_sessions(host, fname, end_state)
-        if isinstance(values.get("gcode_release"), str):
-            track_gcode_release(host, values["gcode_release"])
-        check_overheat(host, values)
+        if m := re.fullmatch(r'v="(.*)"', fields_str):
+            values[name] = m.group(1).replace('\\"',
+                                              '"').replace("\\\\", "\\")
+            continue
+        fields = dict(
+            f.split("=", 1) for f in fields_str.split(",") if "=" in f)
+        raw = fields.get("v", fields.get("value"))
+        if raw is None:
+            continue
+        try:
+            values[name] = float(raw.rstrip("i"))
+        except ValueError:
+            continue
+    if values:
+        with live_lock:
+            entry = LIVE.setdefault(host, {"values": {}})
+            entry["values"].update(values)
+            entry["updated"] = time.time()
+            if any(k in values for k in HISTORY_KEYS):
+                v = entry["values"]
+                point = tuple(
+                    v.get(k) if isinstance(v.get(k), float) else None
+                    for k in HISTORY_KEYS)
+                now_ts = round(time.time())
+                HISTORY.setdefault(host, deque(maxlen=HISTORY_LEN)).append(
+                    (now_ts, *point))
+                # persisted tier is throttled to one sample per FINE_EVERY_S
+                if now_ts - LAST_FINE_TS.get(host, 0) >= FINE_EVERY_S:
+                    LAST_FINE_TS[host] = now_ts
+                    PENDING_FINE.append((host, now_ts, *point))
+    if isinstance(values.get("print_filename"), str):
+        mark_telemetry_since(host)
+        fname = values["print_filename"]
+        with live_lock:
+            v_all = LIVE.get(host, {}).get("values", {})
+            d = v_all.get("print_dir")
+            state = v_all.get("print_state")
+        end_state = None
+        if isinstance(state, str) and state and state not in ("printing",
+                                                              "paused"):
+            # fw >= 11247 states are authoritative: a finished/aborted/
+            # idle print is over even if a filename still trickles in
+            end_state = state
+            fname = ""
+        if fname and isinstance(d, str) and d:
+            # fw >= 11244 streams the directory too - full library path
+            fname = d.rstrip("/") + "/" + fname
+        track_print_sessions(host, fname, end_state)
+    ps = values.get("print_state")
+    if isinstance(ps, str) and ps in ("finished", "aborted"):
+        # the end state may arrive in a packet without the filename
+        # metric - catch up on a session that already closed as unknown
+        stamp_late_result(host, ps)
+    if isinstance(values.get("gcode_release"), str):
+        track_gcode_release(host, values["gcode_release"])
+    check_overheat(host, values)
 
 
 def open_tdb():
@@ -248,16 +266,19 @@ def telemetry_logger():
         with db_lock, open_db() as db:
             closed_any = False
             for row in db.execute(
-                    "SELECT id, hostname, file FROM print_log WHERE ended_at IS NULL"
-            ).fetchall():
+                    "SELECT id, hostname, file, started_ts FROM print_log"
+                    " WHERE ended_at IS NULL").fetchall():
                 heard = last_heard.get(row["hostname"])
                 if heard is None or now - heard > STALE_PRINT_S:
                     ended = datetime.fromtimestamp(heard).strftime("%Y-%m-%d %H:%M:%S") \
                         if heard else now_str()
                     ended_ts = int(heard) if heard else now
                     db.execute(
-                        "UPDATE print_log SET ended_at=?, ended_ts=?"
-                        " WHERE id=?", (ended, ended_ts, row["id"]))
+                        "UPDATE print_log SET ended_at=?, ended_ts=?,"
+                        " result=? WHERE id=?",
+                        (ended, ended_ts,
+                         infer_result(row["file"], row["started_ts"],
+                                      ended_ts, db), row["id"]))
                     silence = f"{now - int(heard)} s" if heard else "?"
                     net_log(
                         db, row["hostname"], "telemetry_lost_mid_print",
@@ -382,6 +403,83 @@ def track_gcode_release(host, release):
         db.commit()
 
 
+FILE_HOURS_RE = re.compile(
+    r"(?<![0-9A-Za-z])(\d{1,2})h(?:\s?(\d{1,2})m?)?(?![0-9A-Za-z])")
+
+
+def expected_seconds(fname):
+    """Sliced print time when the farm's file name carries one
+    ('LXS - FB 500g 17h06m.gcode', '...350g 11h00.gcode'); None otherwise."""
+    m = FILE_HOURS_RE.search(str(fname or "").rsplit("/", 1)[-1])
+    if not m:
+        return None
+    return int(m.group(1)) * 3600 + int(m.group(2) or 0) * 60
+
+
+def learned_seconds(db, fname):
+    """Typical duration of this exact file across the fleet's history: the
+    farm prints identical files hundreds of times on identical printers, so
+    completed runs cluster tightly while aborts scatter below. p70 lands in
+    the completed cluster's neighbourhood, the median inside it is the
+    estimate. None when history is too thin (< 5 runs) or too scattered."""
+    base = str(fname or "").rsplit("/", 1)[-1].lower()
+    if not base:
+        return None
+    durations = sorted(
+        r["ended_ts"] - r["started_ts"] for r in db.execute(
+            "SELECT file, started_ts, ended_ts FROM print_log"
+            " WHERE ended_ts IS NOT NULL AND started_ts IS NOT NULL"
+            " AND ended_ts - started_ts >= 600")
+        if r["file"].rsplit("/", 1)[-1].lower() == base)
+    if len(durations) < 5:
+        return None
+    p70 = durations[int(len(durations) * 0.7)]
+    cluster = [d for d in durations if 0.8 * p70 <= d <= 1.3 * p70]
+    if len(cluster) < 3:
+        return None
+    return cluster[len(cluster) // 2]
+
+
+def infer_result(fname, started_ts, ended_ts, db=None):
+    """Fallback verdict when the stream never witnessed the end (reset,
+    network loss, pre-11247 firmware, restart gaps): session length vs the
+    expected duration - the sliced time in the file name when present, else
+    the file's typical duration learned from the fleet's history (needs a
+    db handle). Trailing '?' = inferred, shown as such. The 50-90% middle
+    ground stays unknown - pauses stretch real prints, late aborts exist."""
+    if not started_ts or not ended_ts:
+        return None
+    expected = expected_seconds(fname)
+    if (not expected or expected < 600) and db is not None:
+        expected = learned_seconds(db, fname)
+    if not expected or expected < 600:
+        return None
+    actual = ended_ts - started_ts
+    if actual >= 0.9 * expected:
+        return "finished?"
+    if actual < 0.5 * expected:
+        return "aborted?"
+    return None
+
+
+def stamp_late_result(host, state):
+    """The authoritative end state can arrive in a later packet than the
+    empty filename that closed the session (they are separate metrics) -
+    upgrade a just-closed session's unknown or inferred verdict to the
+    witnessed one. Repeats harmlessly while the printer shows its end
+    screen (first stamp makes it a no-op)."""
+    with db_lock, open_db() as db:
+        row = db.execute(
+            "SELECT id, result FROM print_log WHERE hostname=?"
+            " AND ended_ts >= ? ORDER BY id DESC LIMIT 1",
+            (host, int(time.time()) - 600)).fetchone()
+        if row and row["result"] != state and (
+                row["result"] is None or row["result"].endswith("?")):
+            db.execute("UPDATE print_log SET result=? WHERE id=?",
+                       (state, row["id"]))
+            db.commit()
+
+
 def same_print(stored, incoming):
     """A stored session path and an incoming print_filename mean the same
     print when equal - or when one is the other's basename: the directory
@@ -434,18 +532,22 @@ def track_print_sessions(host, fname, end_state=None):
                 # dropped off the network mid-print and came back: the
                 # watchdog-closed session continues instead of splitting
                 db.execute(
-                    "UPDATE print_log SET ended_at=NULL, ended_ts=NULL"
-                    " WHERE id=?", (row["id"], ))
+                    "UPDATE print_log SET ended_at=NULL, ended_ts=NULL,"
+                    " result=NULL WHERE id=?", (row["id"], ))
                 net_log(db, host, "print_session_reopened",
                         f"przerwa ~{now_ts - row['ended_ts']} s, plik: {fname}")
                 db.commit()
                 bus.publish("printers", host)
                 return
-        db.execute(
-            "UPDATE print_log SET ended_at=?, ended_ts=?,"
-            " result=COALESCE(result, ?)"
-            " WHERE hostname=? AND ended_at IS NULL",
-            (now, now_ts, result, host))
+        for open_row in db.execute(
+                "SELECT id, file, started_ts FROM print_log"
+                " WHERE hostname=? AND ended_at IS NULL", (host, )).fetchall():
+            verdict = result or infer_result(open_row["file"],
+                                             open_row["started_ts"], now_ts,
+                                             db)
+            db.execute(
+                "UPDATE print_log SET ended_at=?, ended_ts=?, result=?"
+                " WHERE id=?", (now, now_ts, verdict, open_row["id"]))
         if fname:
             db.execute(
                 "INSERT INTO print_log(hostname, file, started_at,"

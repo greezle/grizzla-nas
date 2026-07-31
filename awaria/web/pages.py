@@ -1436,12 +1436,18 @@ def result_badge(p):
     if not p["ended_at"]:
         return '<span class="badge b-ok">w trakcie</span>'
     result = p["result"] if "result" in p.keys() else None
+    inferred = (' title="Wynik wnioskowany: czas wydruku vs czas z nazwy'
+                ' pliku (koniec nie został zarejestrowany na żywo)"')
     if result == "finished":
         return '<span class="badge b-ok">ukończony</span>'
+    if result == "finished?":
+        return f'<span class="badge b-ok"{inferred}>ukończony*</span>'
     if result == "aborted":
         return '<span class="badge b-block">anulowany</span>'
+    if result == "aborted?":
+        return f'<span class="badge b-block"{inferred}>anulowany*</span>'
     return ('<span class="badge b-degr" title="Koniec nie został zarejestrowany'
-            ' (starszy firmware, reset albo utrata sieci)">nieznany</span>')
+            ' i nazwa pliku nie zawiera czasu wydruku">nieznany</span>')
 
 
 def prints_window(query):
