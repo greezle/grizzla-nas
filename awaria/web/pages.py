@@ -190,6 +190,9 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .b-block { background: #d32f2f; color: #fff; }
 .b-degr { background: #f2c200; color: #111; }
 .b-ok { background: #2e7d32; color: #fff; }
+.b-run { background: #1565c0; color: #fff; }
+.gico { vertical-align: middle; }
+a:hover .gico polyline { stroke: #d32f2f; }
 main { padding: 16px 20px 260px; max-width: 1200px; margin: 0 auto; }
 h2 { font-size: 16px; margin: 22px 0 8px; }
 table { border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
@@ -1433,22 +1436,24 @@ def known_printers(db):
 
 
 def result_badge(p):
-    """How the print ended (print_log.result, recorded forever)."""
+    """How the print ended (print_log.result, recorded forever). Inferred
+    verdicts ('?' suffix in the db) show the same label - the hover title
+    is the only place the provenance is mentioned."""
     if not p["ended_at"]:
-        return '<span class="badge b-ok">w trakcie</span>'
+        return '<span class="badge b-run">w trakcie</span>'
     result = p["result"] if "result" in p.keys() else None
-    inferred = (' title="Wynik wnioskowany: czas wydruku vs czas z nazwy'
-                ' pliku (koniec nie został zarejestrowany na żywo)"')
+    inferred = (' title="Wynik z porównania czasu wydruku z szacowanym'
+                ' czasem pliku (koniec nie został zarejestrowany na żywo)"')
     if result == "finished":
         return '<span class="badge b-ok">ukończony</span>'
     if result == "finished?":
-        return f'<span class="badge b-ok"{inferred}>ukończony*</span>'
+        return f'<span class="badge b-ok"{inferred}>ukończony</span>'
     if result == "aborted":
         return '<span class="badge b-block">anulowany</span>'
     if result == "aborted?":
-        return f'<span class="badge b-block"{inferred}>anulowany*</span>'
+        return f'<span class="badge b-block"{inferred}>anulowany</span>'
     return ('<span class="badge b-degr" title="Koniec nie został zarejestrowany'
-            ' i nazwa pliku nie zawiera czasu wydruku">nieznany</span>')
+            ' i brak szacowanego czasu do porównania">nieznany</span>')
 
 
 def prints_window(query):
@@ -1531,30 +1536,29 @@ def render_prints_partial(db, query):
         return '<div class="empty">Brak wydruków w wybranym zakresie.</div>'
     now = int(time.time())
     telemetry_floor = now - FINE_KEEP_S
-    meta_idx = gcode_meta_index(db)
+    graph_icon = ('<svg class="gico" width="22" height="14" viewBox="0 0 22 14">'
+                  '<polyline points="1,11 5,3 9,8 13,2 17,6 21,4" fill="none"'
+                  ' stroke="#1565c0" stroke-width="1.8"/>'
+                  '<polyline points="1,13 21,13" fill="none" stroke="#90a4ae"'
+                  ' stroke-width="1"/></svg>')
     trs = []
     for p in rows:
-        chart = ('<a href="/awaria/print/%d">wykres</a>' % p["id"] if
+        chart = (f'<a href="/awaria/print/{p["id"]}" title="Wykres temperatur">'
+                 f'{graph_icon}</a>' if
                  (p["ended_ts"] or now) >= telemetry_floor else
                  '<span class="muted" title="Telemetria już wygasła">—</span>')
-        meta = meta_of_print(meta_idx, p["file"])
-        filament = (meta["filament"] if meta and meta["filament"] else
-                    p["material"]) or "—"
-        sheet = meta["sheet"] if meta and meta["sheet"] else "—"
         trs.append(f"""<tr>
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
             <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b>{kind_badge(p)}</td>
             <td class="age">{e(p['started_at'])}</td>
             <td>{fmt_age(p['started_at'], p['ended_at'])}</td>
-            <td>{e(filament)}</td><td>{e(sheet)}</td>
             <td>{result_badge(p)}</td><td>{chart}</td></tr>""")
     note = (f'<p class="muted">Pokazano pierwsze {PRINTS_LIMIT} wydruków — '
             'zawęź zakres albo wybór drukarek.</p>' if truncated else '')
     return (f'<p class="muted">{len(rows)} wydruków'
             f'{" (lista obcięta)" if truncated else ""}</p>'
             '<table><tr><th>Drukarka</th><th>Plik</th><th>Start</th>'
-            '<th>Czas</th><th>Filament</th><th>Podkładka</th>'
-            f'<th>Wynik</th><th></th></tr>{"".join(trs)}</table>'
+            f'<th>Czas</th><th>Wynik</th><th></th></tr>{"".join(trs)}</table>'
             f'{note}')
 
 
@@ -1726,21 +1730,13 @@ def render_print_detail(db, pid):
     material = (f' — materiał: <b>{e(p["material"])}</b>'
                 if p["material"] else '')
     gm = meta_of_print(gcode_meta_index(db), p["file"])
-    bits = []
-    if gm:
-        if gm["filament"]:
-            grams = f' ({gm["fil_g"]:.0f} g)' if gm["fil_g"] else ""
-            bits.append(f'filament <b>{e(gm["filament"])}</b>{grams}')
-            material = ""  # the path-guessed material is redundant now
-        if gm["sheet"]:
-            bits.append(f'podkładka <b>{e(gm["sheet"])}</b>')
-        if gm["est_s"]:
-            pct = ""
-            if p["ended_ts"] and p["started_ts"]:
-                ratio = 100 * (p["ended_ts"] - p["started_ts"]) / gm["est_s"]
-                pct = f' — wydrukowano <b>{ratio:.0f}%</b> szacowanego czasu'
-            bits.append(f'szacowany czas <b>{fmt_dur(gm["est_s"])}</b>{pct}')
-    gcode_info = f'<p>{" — ".join(bits)}</p>' if bits else ""
+    gcode_info = ""
+    if gm and gm["est_s"]:
+        pct = ""
+        if p["ended_ts"] and p["started_ts"]:
+            ratio = 100 * (p["ended_ts"] - p["started_ts"]) / gm["est_s"]
+            pct = f' — wydrukowano <b>{ratio:.0f}%</b> szacowanego czasu'
+        gcode_info = f'<p>Szacowany czas: <b>{fmt_dur(gm["est_s"])}</b>{pct}</p>'
     meta = f"""
     <p><a href="/awaria/history">&larr; Historia wydruków</a></p>
     <h2>Wydruk: {e(display_name(p['file']))} {result_badge(p)}{kind_badge(p)}</h2>
