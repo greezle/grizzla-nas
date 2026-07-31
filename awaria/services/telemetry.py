@@ -181,15 +181,17 @@ def metrics_worker():
                 v_all = LIVE.get(host, {}).get("values", {})
                 d = v_all.get("print_dir")
                 state = v_all.get("print_state")
+            end_state = None
             if isinstance(state, str) and state and state not in ("printing",
                                                                   "paused"):
                 # fw >= 11247 states are authoritative: a finished/aborted/
                 # idle print is over even if a filename still trickles in
+                end_state = state
                 fname = ""
             if fname and isinstance(d, str) and d:
                 # fw >= 11244 streams the directory too - full library path
                 fname = d.rstrip("/") + "/" + fname
-            track_print_sessions(host, fname)
+            track_print_sessions(host, fname, end_state)
         if isinstance(values.get("gcode_release"), str):
             track_gcode_release(host, values["gcode_release"])
         check_overheat(host, values)
@@ -392,11 +394,15 @@ def same_print(stored, incoming):
             or incoming.endswith("/" + stored))
 
 
-def track_print_sessions(host, fname):
+def track_print_sessions(host, fname, end_state=None):
     prev = LAST_FILE.get(host)
     if fname == prev:
         return
     LAST_FILE[host] = fname
+    # how the print ended, from the authoritative state: 'finished' and
+    # 'aborted' are recorded forever on the session; an 'idle' close (missed
+    # end states) and file-to-file jumps stay NULL = unknown
+    result = end_state if end_state in ("finished", "aborted") else None
     now, now_ts = now_pair()
     with db_lock, open_db() as db:
         if prev and fname and fname.endswith("/" + prev):
@@ -436,8 +442,10 @@ def track_print_sessions(host, fname):
                 bus.publish("printers", host)
                 return
         db.execute(
-            "UPDATE print_log SET ended_at=?, ended_ts=?"
-            " WHERE hostname=? AND ended_at IS NULL", (now, now_ts, host))
+            "UPDATE print_log SET ended_at=?, ended_ts=?,"
+            " result=COALESCE(result, ?)"
+            " WHERE hostname=? AND ended_at IS NULL",
+            (now, now_ts, result, host))
         if fname:
             db.execute(
                 "INSERT INTO print_log(hostname, file, started_at,"

@@ -18,8 +18,9 @@ from awaria.services.telemetry import (history_columns, samples_columns)
 from awaria.web.exports import export_failures_csv, export_failures_xlsx
 from awaria.web.pages import (page, render_home, render_printer,
                               render_failure, render_failures_list,
-                              render_components, render_history, render_stats,
-                              render_defs_list, render_def_form,
+                              render_components, render_history,
+                              render_prints_partial, render_print_detail,
+                              render_stats, render_defs_list, render_def_form,
                               render_netlog, render_telemetry)
 
 
@@ -213,6 +214,13 @@ class Handler(BaseHTTPRequestHandler):
             return 200, render_netlog(db, query), self.HTML
         if path == "/awaria/history":
             return 200, render_history(db, query), self.HTML
+        if path == "/awaria/partial/prints":
+            return 200, render_prints_partial(db, query), self.HTML
+        m = re.fullmatch(r"/awaria/print/(\d+)", path)
+        if m:
+            if content := render_print_detail(db, int(m.group(1))):
+                return 200, content, self.HTML
+            return None
         if path == "/awaria/stats":
             return 200, render_stats(db, query), self.HTML
         if path == "/awaria/api/notifications.json":

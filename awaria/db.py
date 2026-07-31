@@ -454,9 +454,19 @@ def migrate_6_failure_comments(db):
                " ON failure_comments(failure_id)")
 
 
+def migrate_7_print_result(db):
+    """print_log.result: how the print ended - 'finished' / 'aborted' from
+    the authoritative print_state metric (fw >= 11247), NULL = unknown
+    (pre-migration rows, network losses, printer resets). print_log is the
+    permanent what-was-printed archive: rows are NEVER purged (only
+    telemetry samples expire), so the farm can look years back."""
+    add_column(db, "print_log", "result TEXT")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
-    migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments
+    migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments,
+    migrate_7_print_result
 ]
 
 

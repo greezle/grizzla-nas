@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 
 from awaria.config import (OFFSITE_STAMP, OFFSITE_MAX_AGE_S,
                            SCREEN_NOTE_ERROR_ID)
-from awaria.db import db_lock, open_db, now_str, to_epoch
+from awaria.db import (db_lock, open_db, now_str, to_epoch,
+                       to_epoch_or_none)
 from awaria.services.printers import is_online
 from awaria.services.telemetry import (FINE_EVERY_S, FINE_KEEP_S, live_of,
                                        is_overheated, HISTORY, live_lock)
@@ -66,6 +67,15 @@ input[type=submit]:hover { transform: translateY(-1px); }
   background: rgba(0,0,0,.30); border-radius: 2px; }
 .sq .prog i { display: block; height: 100%; background: #fff; border-radius: 2px;
   animation: prog-pulse 1.6s ease-in-out infinite; }
+.selmap .selsq { cursor: pointer; background: #cfd8dc; color: #37474f; position: relative; }
+.selmap .selsq input { position: absolute; top: 1px; left: 1px; margin: 0; width: 12px; height: 12px; accent-color: #1565c0; }
+.selmap .selsq:has(input:checked) { background: #1565c0; color: #fff; }
+.selmap .selsq.empty { opacity: .18; cursor: default; }
+.selmap .selsq.wide { width: auto; min-width: 44px; padding: 0 8px 0 18px; }
+.sec-pick { cursor: pointer; }
+.sec-pick input { accent-color: #1565c0; }
+.sec-grid.extras { display: flex; flex-wrap: wrap; gap: 4px; }
+.zbtn { border: 1px solid #b0bec5; background: #fff; border-radius: 4px; width: 26px; height: 24px; cursor: pointer; font-weight: 700; }
 @keyframes prog-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 .map-legend { margin-top: 10px; color: #666; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .map-legend .sq.mini { width: 18px; height: 18px; display: inline-flex; margin-left: 14px; cursor: default; }
@@ -1406,109 +1416,360 @@ def kind_badge(p):
     return f' <span class="badge b-degr">{label}</span>'
 
 
-def render_history(db, query):
-    host = (query.get("host") or [""])[0][:32]
-    range_h = (query.get("range") or ["24"])[0]
-    range_h = range_h if range_h in ("6", "24", "48", "96") else "24"
-    try:
-        t_from = int((query.get("from") or ["0"])[0])
-        t_to = int((query.get("to") or ["0"])[0])
-    except ValueError:
-        t_from = t_to = 0
-    if not t_from or not t_to:
-        t_to = int(time.time())
-        t_from = t_to - int(range_h) * 3600
+HISTORY_ZONES = [["N", "M", "L"], ["A", "B", "C", "D", "E"], ["G", "H", "I"],
+                 ["J", "K"]]
 
-    hosts = [
+
+PRINTS_LIMIT = 1000
+
+
+def known_printers(db):
+    return [
         r["hostname"] for r in db.execute(
-            "SELECT hostname FROM printers UNION SELECT DISTINCT hostname FROM events ORDER BY 1"
-        )
+            "SELECT hostname FROM printers"
+            " UNION SELECT DISTINCT hostname FROM print_log ORDER BY 1")
     ]
-    host_options = '<option value="">— wybierz drukarkę —</option>' + "".join(
-        f'<option value="{e(h)}"{" selected" if h == host else ""}>{e(h)}</option>'
-        for h in hosts)
-    range_options = "".join(
-        f'<option value="{v}"{" selected" if v == range_h else ""}>{label}</option>'
-        for v, label in (("6", "6 godzin"), ("24", "24 godziny"),
-                         ("48", "2 dni"), ("96", "4 dni")))
 
-    if host:
-        chart_html = f"""
-        <div class="card" style="flex-basis:100%"><h3>Temperatury — {e(host)}</h3>
-          <div id="hchart"><p class="muted">Ładowanie...</p></div></div>
-        <link rel="stylesheet" href="/awaria/static/uPlot.min.css">
-        <script src="/awaria/static/uPlot.iife.min.js"></script>
-        <script>
-        (async function() {{
-          const data = await (await fetch('/awaria/api/samples/{urllib.parse.quote(host)}?from={t_from}&to={t_to}')).json();
-          const el = document.getElementById('hchart');
-          if (!data[0] || data[0].length < 2) {{ el.innerHTML = '<p class="muted">Brak zapisanych danych w tym okresie.</p>'; return; }}
-          el.innerHTML = '';
-          new uPlot({{
-            width: el.clientWidth || 900, height: 300,
-            series: [ {{}},
-              {{label: 'Dysza', stroke: '#d32f2f', width: 2}},
-              {{label: 'Dysza cel', stroke: '#d32f2f', dash: [6, 6]}},
-              {{label: 'Stół', stroke: '#1565c0', width: 2}},
-              {{label: 'Stół cel', stroke: '#1565c0', dash: [6, 6]}},
-              {{label: 'Płyta xBuddy', stroke: '#2e7d32'}} ],
-          }}, data, el);
-        }})();
-        </script>"""
-    else:
-        chart_html = '<div class="empty">Wybierz drukarkę, aby zobaczyć wykres temperatur.</div>'
 
-    week_ago = (datetime.now() -
-                timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-    show_all = bool(query.get("all"))
-    kind_filter = "" if show_all else " AND kind='prod'"
-    if host:
-        prints = db.execute(
-            f"SELECT * FROM print_log WHERE started_at>=? AND hostname=?"
-            f"{kind_filter} ORDER BY started_at DESC LIMIT 200",
-            (week_ago, host)).fetchall()
-    else:
-        prints = db.execute(
-            f"SELECT * FROM print_log WHERE started_at>=?"
-            f"{kind_filter} ORDER BY started_at DESC LIMIT 200",
-            (week_ago, )).fetchall()
-    prows = []
-    for p in prints:
-        start_e = to_epoch(p["started_at"])
-        end_e = to_epoch(p["ended_at"]) if p["ended_at"] else int(time.time())
-        link = (f'/awaria/history?host={urllib.parse.quote(p["hostname"])}'
-                f'&from={start_e - 300}&to={end_e + 300}')
-        duration = fmt_age(p["started_at"], p["ended_at"]) if p["ended_at"] else \
-            f'<span class="badge b-ok">w trakcie</span> {fmt_age(p["started_at"])}'
-        prows.append(f"""<tr>
+def result_badge(p):
+    """How the print ended (print_log.result, recorded forever)."""
+    if not p["ended_at"]:
+        return '<span class="badge b-ok">w trakcie</span>'
+    result = p["result"] if "result" in p.keys() else None
+    if result == "finished":
+        return '<span class="badge b-ok">ukończony</span>'
+    if result == "aborted":
+        return '<span class="badge b-block">anulowany</span>'
+    return ('<span class="badge b-degr" title="Koniec nie został zarejestrowany'
+            ' (starszy firmware, reset albo utrata sieci)">nieznany</span>')
+
+
+def prints_window(query):
+    """(from_ts, to_ts, range_key, date_from, date_to) of the prints list."""
+    rng = (query.get("range") or ["7d"])[0]
+    if rng not in ("1d", "7d", "30d", "custom"):
+        rng = "7d"
+    now = int(time.time())
+    if rng == "custom":
+        date_from = (query.get("dfrom") or [""])[0][:10]
+        date_to = (query.get("dto") or [""])[0][:10]
+        f = to_epoch_or_none(date_from)
+        t = to_epoch_or_none(date_to)
+        return (f if f is not None else now - 7 * 86400,
+                (t + 86400) if t is not None else now, rng, date_from,
+                date_to)
+    days = {"1d": 1, "7d": 7, "30d": 30}[rng]
+    return now - days * 86400, now, rng, "", ""
+
+
+def selected_hosts_of(query, known):
+    """Selected printers: no param = all, '-' = none. Legacy single-printer
+    links (?host=X) keep working."""
+    raw = ((query.get("hosts") or [""])[0].strip()
+           or (query.get("host") or [""])[0].strip())
+    if raw == "-":
+        return set()
+    kset = set(known)
+    if not raw:
+        return kset
+    return {h for h in raw.split(",") if h in kset}
+
+
+def render_prints_partial(db, query):
+    """Just the prints table - the map/range controls refetch this."""
+    known = known_printers(db)
+    selected = selected_hosts_of(query, known)
+    f_ts, t_ts = prints_window(query)[:2]
+    if not selected:
+        return '<div class="empty">Nie zaznaczono żadnej drukarki.</div>'
+    where = ["p.started_ts >= ?", "p.started_ts < ?"]
+    params = [f_ts, t_ts]
+    if len(selected) < len(known):
+        where.append("p.hostname IN (%s)" % ",".join("?" * len(selected)))
+        params += sorted(selected)
+    if not query.get("all"):
+        where.append("p.kind='prod'")
+    rows = db.execute(
+        f"SELECT * FROM print_log p WHERE {' AND '.join(where)}"
+        " ORDER BY p.started_ts DESC LIMIT ?",
+        params + [PRINTS_LIMIT + 1]).fetchall()
+    truncated = len(rows) > PRINTS_LIMIT
+    rows = rows[:PRINTS_LIMIT]
+    if not rows:
+        return '<div class="empty">Brak wydruków w wybranym zakresie.</div>'
+    now = int(time.time())
+    telemetry_floor = now - FINE_KEEP_S
+    trs = []
+    for p in rows:
+        chart = ('<a href="/awaria/print/%d">wykres</a>' % p["id"] if
+                 (p["ended_ts"] or now) >= telemetry_floor else
+                 '<span class="muted" title="Telemetria już wygasła">—</span>')
+        trs.append(f"""<tr>
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
             <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b>{kind_badge(p)}</td>
-            <td class="age">{e(p['started_at'])}</td><td>{duration}</td>
-            <td><a href="{link}">wykres</a></td></tr>""")
-    prints_html = (
-        f'<table><tr><th>Drukarka</th><th>Plik</th><th>Start</th><th>Czas</th><th></th></tr>'
-        f'{"".join(prows)}</table>' if prows else
-        '<div class="empty">Brak zarejestrowanych wydruków w ostatnim tygodniu.</div>'
-    )
+            <td class="age">{e(p['started_at'])}</td>
+            <td>{fmt_age(p['started_at'], p['ended_at'])}</td>
+            <td>{result_badge(p)}</td><td>{chart}</td></tr>""")
+    note = (f'<p class="muted">Pokazano pierwsze {PRINTS_LIMIT} wydruków — '
+            'zawęź zakres albo wybór drukarek.</p>' if truncated else '')
+    return (f'<p class="muted">{len(rows)} wydruków'
+            f'{" (lista obcięta)" if truncated else ""}</p>'
+            '<table><tr><th>Drukarka</th><th>Plik</th><th>Start</th>'
+            f'<th>Czas</th><th>Wynik</th><th></th></tr>{"".join(trs)}</table>'
+            f'{note}')
+
+
+def render_history(db, query):
+    """Print archive: the farm map as a multi-select (checkbox per printer,
+    checkbox per section) + range buttons; every click refetches the list
+    in place. print_log rows never expire - only telemetry does, so old
+    prints keep name/time/result but lose the chart link."""
+    known = known_printers(db)
+    kset = set(known)
+    selected = selected_hosts_of(query, known)
+    _, _, rng, date_from, date_to = prints_window(query)
+    show_all = bool(query.get("all"))
+
+    mapped = set()
+    zones_html = []
+    for zone in HISTORY_ZONES:
+        secs = []
+        for s in zone:
+            cells = []
+            sec_hosts = []
+            for n in range(1, 7):
+                h = f"{s}{n}"
+                if h in kset:
+                    mapped.add(h)
+                    sec_hosts.append(h)
+                    chk = " checked" if h in selected else ""
+                    cells.append(
+                        f'<label class="sq selsq"><input type="checkbox"'
+                        f' class="selbox" value="{h}"{chk}>{n}</label>')
+                else:
+                    cells.append('<span class="sq selsq empty"></span>')
+            sec_box = (
+                f'<label class="sec-pick"><input type="checkbox"'
+                f' class="secbox" data-hosts="{",".join(sec_hosts)}"> {s}'
+                '</label>' if sec_hosts else s)
+            secs.append(
+                f'<div class="section"><div class="sec-label">{sec_box}</div>'
+                f'<div class="sec-grid">{"".join(cells)}</div></div>')
+        zones_html.append(f'<div class="zone">{"".join(secs)}</div>')
+    extras = [h for h in known if h not in mapped]
+    extras_html = ""
+    if extras:
+        boxes = "".join(
+            f'<label class="sq selsq wide"><input type="checkbox"'
+            f' class="selbox" value="{e(h)}"'
+            f'{" checked" if h in selected else ""}>{e(h)}</label>'
+            for h in extras)
+        extras_html = (
+            '<div class="section"><div class="sec-label">'
+            '<label class="sec-pick"><input type="checkbox" class="secbox"'
+            f' data-hosts="{e(",".join(extras))}"> inne</label></div>'
+            f'<div class="sec-grid extras">{boxes}</div></div>')
+
+    ranges_html = "".join(
+        f'<label><input type="radio" name="rng" value="{v}"'
+        f'{" checked" if rng == v else ""}> {t}</label>'
+        for v, t in (("1d", "1 dzień"), ("7d", "1 tydzień"),
+                     ("30d", "1 miesiąc"), ("custom", "zakres dat")))
 
     body = f"""
-    <div class="sec-head"><h2>Historia telemetrii</h2>
-      <form method="get" action="/awaria/history" class="inline-form">
-        <select name="host">{host_options}</select>
-        <select name="range">{range_options}</select>
-        <input type="submit" value="Pokaż">
-      </form>
+    <h2>Historia wydruków</h2>
+    <div class="card">
+      <div class="farm-map selmap">{''.join(zones_html)}{extras_html}</div>
+      <p class="muted" style="margin:6px 0 10px">
+        <a href="#" id="selall">zaznacz wszystkie</a> ·
+        <a href="#" id="selnone">wyczyść</a></p>
+      <div class="inline-form" id="rangebar">
+        {ranges_html}
+        <span id="customdates" style="display:{'inline' if rng == 'custom' else 'none'}">
+          od <input type="date" id="dfrom" value="{e(date_from)}">
+          do <input type="date" id="dto" value="{e(date_to)}">
+        </span>
+        <label><input type="checkbox" id="showall"{' checked' if show_all else ''}>
+          pokaż też testy i serwisowe</label>
+      </div>
     </div>
-    {chart_html}
-    <h2>Wydruki (ostatnie 7 dni)
-      <a style="float:right;font-weight:400;font-size:13px"
-         href="/awaria/history?all={'' if show_all else '1'}{'&host=' + urllib.parse.quote(host) if host else ''}">
-         {'ukryj testy i serwisowe' if show_all else 'pokaż też testy i serwisowe'}</a></h2>{prints_html}
-    <p class="muted">Historia temperatur: 1 próbka / {FINE_EVERY_S} s na drukarkę, przechowywana
-    {FINE_KEEP_S // 86400} dni; długie zakresy są uśredniane do ~3600 punktów — zawęź zakres
-    (albo kliknij "wykres" przy wydruku), aby zobaczyć pełny detal. Wydruki wykrywane z
-    telemetrii (wymaga firmware ≥ 11240).</p>"""
+    <div id="plist">{render_prints_partial(db, query)}</div>
+    <p class="muted">Lista wydruków (plik, czas, wynik) jest przechowywana
+    bezterminowo. Telemetria (wykresy temperatur) — {FINE_KEEP_S // 86400} dni,
+    1 próbka / {FINE_EVERY_S} s. Wydruki wykrywane z telemetrii (firmware ≥ 11240);
+    wynik ukończony/anulowany od firmware ≥ 11247.</p>
+    <script>
+    (function() {{
+      const boxes = () => [...document.querySelectorAll('.selbox')];
+
+      function syncSections() {{
+        document.querySelectorAll('.secbox').forEach(sb => {{
+          const hosts = sb.dataset.hosts.split(',').filter(Boolean);
+          const sel = boxes().filter(b => hosts.includes(b.value) && b.checked).length;
+          sb.checked = hosts.length > 0 && sel === hosts.length;
+          sb.indeterminate = sel > 0 && sel < hosts.length;
+        }});
+      }}
+
+      function qs() {{
+        const p = new URLSearchParams();
+        const sel = boxes().filter(b => b.checked).map(b => b.value);
+        if (sel.length === 0) p.set('hosts', '-');
+        else if (sel.length < boxes().length) p.set('hosts', sel.join(','));
+        const rng = document.querySelector('input[name=rng]:checked').value;
+        p.set('range', rng);
+        if (rng === 'custom') {{
+          const f = document.getElementById('dfrom').value,
+                t = document.getElementById('dto').value;
+          if (f) p.set('dfrom', f);
+          if (t) p.set('dto', t);
+        }}
+        if (document.getElementById('showall').checked) p.set('all', '1');
+        return p.toString();
+      }}
+
+      let seq = 0;
+      async function refresh() {{
+        const q = qs(), my = ++seq;
+        history.replaceState(null, '', '/awaria/history?' + q);
+        const r = await fetch('/awaria/partial/prints?' + q);
+        if (!r.ok || my !== seq) return;
+        document.getElementById('plist').innerHTML = await r.text();
+      }}
+
+      boxes().forEach(b =>
+        b.addEventListener('change', () => {{ syncSections(); refresh(); }}));
+      document.querySelectorAll('.secbox').forEach(sb =>
+        sb.addEventListener('change', () => {{
+          const hosts = sb.dataset.hosts.split(',').filter(Boolean);
+          boxes().forEach(b => {{
+            if (hosts.includes(b.value)) b.checked = sb.checked;
+          }});
+          syncSections(); refresh();
+        }}));
+      document.querySelectorAll('input[name=rng]').forEach(r =>
+        r.addEventListener('change', () => {{
+          document.getElementById('customdates').style.display =
+            (r.value === 'custom' && r.checked) ? 'inline' : 'none';
+          refresh();
+        }}));
+      ['dfrom', 'dto'].forEach(id =>
+        document.getElementById(id).addEventListener('change', refresh));
+      document.getElementById('showall').addEventListener('change', refresh);
+      document.getElementById('selall').addEventListener('click', ev => {{
+        ev.preventDefault();
+        boxes().forEach(b => b.checked = true);
+        syncSections(); refresh();
+      }});
+      document.getElementById('selnone').addEventListener('click', ev => {{
+        ev.preventDefault();
+        boxes().forEach(b => b.checked = false);
+        syncSections(); refresh();
+      }});
+      syncSections();
+    }})();
+    </script>"""
     return page("GRIZZLA — historia", ("", body))
+
+
+def render_print_detail(db, pid):
+    """One print: metadata + its temperature chart with zoom (buttons and
+    mouse drag-select; zooming refetches, so long prints regain full sample
+    detail as the window narrows). Prints older than the telemetry window
+    keep the metadata and lose the chart."""
+    p = db.execute("SELECT * FROM print_log WHERE id=?", (pid, )).fetchone()
+    if not p:
+        return None
+    now = int(time.time())
+    start = p["started_ts"] or now
+    end = p["ended_ts"] or now
+    quoted = urllib.parse.quote(p["hostname"])
+    material = (f' — materiał: <b>{e(p["material"])}</b>'
+                if p["material"] else '')
+    meta = f"""
+    <p><a href="/awaria/history">&larr; Historia wydruków</a></p>
+    <h2>Wydruk: {e(display_name(p['file']))} {result_badge(p)}{kind_badge(p)}</h2>
+    <div class="card">
+      <p>Drukarka: <a class="host" href="/awaria/printer/{quoted}">{e(p['hostname'])}</a>{material}</p>
+      <p class="muted">{e(p['file'])}</p>
+      <p>Start: <b>{e(p['started_at'])}</b> — koniec:
+         <b>{e(p['ended_at'] or 'w trakcie')}</b> —
+         czas: <b>{fmt_age(p['started_at'], p['ended_at'])}</b></p>
+    </div>"""
+    if end < now - FINE_KEEP_S:
+        return page(
+            f"GRIZZLA — wydruk {p['hostname']}",
+            ("", meta + f'<div class="empty">Telemetria tego wydruku już '
+             f'wygasła (przechowywana {FINE_KEEP_S // 86400} dni); '
+             'lista wydruków pozostaje bezterminowo.</div>'))
+    chart = f"""
+    <div class="card" style="flex-basis:100%">
+      <h3 style="margin-top:0">Temperatury
+        <span style="float:right;font-weight:400;font-size:13px">
+          <button class="zbtn" id="zin" title="Przybliż">+</button>
+          <button class="zbtn" id="zout" title="Oddal">&minus;</button>
+          <button class="zbtn" id="zreset" title="Cały wydruk">&#10226;</button>
+          <span class="muted">albo zaznacz zakres myszą</span>
+        </span></h3>
+      <div id="pchart"><p class="muted">Ładowanie...</p></div>
+    </div>
+    <link rel="stylesheet" href="/awaria/static/uPlot.min.css">
+    <script src="/awaria/static/uPlot.iife.min.js"></script>
+    <script>
+    (function() {{
+      const HOST = {json.dumps(p["hostname"])};
+      const START = {start - 300}, END = {end + 300};
+      const FLOOR = Math.floor(Date.now() / 1000) - {FINE_KEEP_S};
+      let cf = START, ct = END, u = null, seq = 0;
+
+      async function load(f, t) {{
+        f = Math.max(Math.floor(f), FLOOR);
+        t = Math.min(Math.ceil(t), Math.floor(Date.now() / 1000) + 60);
+        if (t - f < 60) return;  // minute is the floor - samples are sparser
+        cf = f; ct = t;
+        const my = ++seq;
+        const data = await (await fetch('/awaria/api/samples/' +
+          encodeURIComponent(HOST) + '?from=' + f + '&to=' + t)).json();
+        if (my !== seq) return;
+        const el = document.getElementById('pchart');
+        if (!data[0] || data[0].length < 2) {{
+          el.innerHTML = '<p class="muted">Brak danych w tym zakresie.</p>';
+          u = null;
+          return;
+        }}
+        if (u) {{ u.setData(data); return; }}
+        el.innerHTML = '';
+        u = new uPlot({{
+          width: el.clientWidth || 900, height: 320,
+          series: [ {{}},
+            {{label: 'Dysza', stroke: '#d32f2f', width: 2}},
+            {{label: 'Dysza cel', stroke: '#d32f2f', dash: [6, 6]}},
+            {{label: 'Stół', stroke: '#1565c0', width: 2}},
+            {{label: 'Stół cel', stroke: '#1565c0', dash: [6, 6]}},
+            {{label: 'Płyta xBuddy', stroke: '#2e7d32'}} ],
+          hooks: {{ setSelect: [su => {{
+            if (su.select.width < 10) return;
+            const f2 = su.posToVal(su.select.left, 'x'),
+                  t2 = su.posToVal(su.select.left + su.select.width, 'x');
+            su.setSelect({{width: 0, height: 0}}, false);
+            load(f2, t2);
+          }}] }},
+        }}, data, el);
+      }}
+
+      document.getElementById('zin').onclick = () => {{
+        const c = (cf + ct) / 2, s = (ct - cf) / 4;
+        load(c - s, c + s);
+      }};
+      document.getElementById('zout').onclick = () => {{
+        const s = (ct - cf) / 2;
+        load(cf - s, ct + s);
+      }};
+      document.getElementById('zreset').onclick = () => load(START, END);
+      load(START, END);
+    }})();
+    </script>"""
+    return page(f"GRIZZLA — wydruk {p['hostname']}", ("", meta + chart))
 
 
 def render_defs_list(db):
