@@ -252,9 +252,12 @@ form.wizard table td { border: none; padding: 3px 6px; }
 .dd-panel label { display: block; padding: 5px 10px; border-radius: 4px; white-space: nowrap;
   cursor: pointer; font-size: 14px; }
 .dd-panel label:hover { background: #f0f0f0; }
-.btn-link { display: inline-block; font-size: 14px; font-weight: 600; text-decoration: none;
-  color: #fff; background: var(--accent); padding: 5px 12px; border-radius: 4px; }
+.btn-link { display: inline-block; font-size: 13px; font-weight: 600; text-decoration: none;
+  color: #fff; background: var(--accent); padding: 4px 12px; border-radius: 4px; }
 .btn-link:hover { background: #0d4f9e; }
+/* meta line above a table: count on the left, its actions on the right */
+.list-head { display: flex; justify-content: space-between; align-items: center;
+  margin: 12px 0 6px; }
 """
 
 
@@ -1676,8 +1679,14 @@ def render_prints_partial(db, query):
             <td>{result_badge(p, progress)}</td><td>{chart}</td></tr>""")
     note = (f'<p class="muted">Pokazano pierwsze {PRINTS_LIMIT} wydruków — '
             'zawęź zakres albo wybór drukarek.</p>' if truncated else '')
-    return (f'<p class="muted">{len(rows)} wydruków'
-            f'{" (lista obcięta)" if truncated else ""}</p>'
+    # the export link rides along with the list: it always carries exactly
+    # the filters that produced these rows, no JS bookkeeping needed
+    export_qs = urllib.parse.urlencode(
+        {k: v[0] for k, v in query.items() if v and v[0] and k != "page"})
+    return (f'<div class="list-head"><span class="muted">{len(rows)} wydruków'
+            f'{" (lista obcięta)" if truncated else ""}</span>'
+            f'<a class="btn-link" href="/awaria/history.xlsx?{export_qs}">'
+            'Eksport XLSX</a></div>'
             '<table><tr><th>Drukarka</th><th>Plik</th><th>Start</th>'
             f'<th>Czas</th><th>Wynik</th><th></th></tr>{"".join(trs)}</table>'
             f'{note}')
@@ -1757,9 +1766,6 @@ def render_history(db, query):
           <b>wszystkie drukarki</b></label>
       </div>
     </div>
-    <div class="sec-head" style="margin-top:16px"><h2 style="font-size:15px">Wydruki</h2>
-      <a id="xlsx" class="btn-link" href="/awaria/history.xlsx">&#8681; Eksport XLSX</a>
-    </div>
     <div id="plist">{render_prints_partial(db, query)}</div>
     <p class="muted">Lista wydruków (plik, czas, wynik) jest przechowywana
     bezterminowo. Telemetria (wykresy temperatur) — {FINE_KEEP_S // 86400} dni,
@@ -1818,7 +1824,6 @@ def render_history(db, query):
       async function refresh(quiet) {{
         const q = qs(), my = ++seq;
         history.replaceState(null, '', '/awaria/history?' + q);
-        document.getElementById('xlsx').href = '/awaria/history.xlsx?' + q;
         const plist = document.getElementById('plist');
         if (!quiet) plist.classList.add('loading');
         const r = await fetch('/awaria/partial/prints?' + q);
@@ -1899,7 +1904,6 @@ def render_history(db, query):
         ev => setAll(ev.target.checked));
       syncSections();
       syncResLabel();
-      document.getElementById('xlsx').href = '/awaria/history.xlsx?' + qs();
     }})();
     </script>"""
     return page("GRIZZLA — historia", ("", body))
