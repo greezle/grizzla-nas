@@ -1382,6 +1382,23 @@ def render_stats(db, query):
         recalc();
       });
       recalc();
+
+      // the filters apply themselves - no "Pokaż" button to press
+      const form = document.getElementById('statform');
+      const dates = document.getElementById('custom-dates');
+      form.range.addEventListener('change', ev => {
+        const custom = ev.target.value === 'custom';
+        dates.style.display = custom ? 'inline-flex' : 'none';
+        if (custom) {
+          const day = d => d.toISOString().slice(0, 10);
+          if (!form.to.value) { form.to.value = day(new Date()); }
+          if (!form.from.value) { form.from.value = day(new Date(Date.now() - 30 * 86400e3)); }
+        }
+        form.submit();
+      });
+      form.weekends.addEventListener('change', () => form.submit());
+      [form.from, form.to].forEach(el =>
+        el.addEventListener('change', () => { if (form.from.value && form.to.value) form.submit(); }));
     })();
     </script>"""
 
@@ -1392,15 +1409,13 @@ def render_stats(db, query):
     custom_display = "inline-flex" if rng == "custom" else "none"
     body = f"""
     <div class="sec-head"><h2>Statystyki wykorzystania</h2>
-      <form method="get" action="/awaria/stats" class="inline-form">
-        <select name="range" onchange="document.getElementById('custom-dates').style.display
-            = this.value === 'custom' ? 'inline-flex' : 'none'">{range_options}</select>
+      <form method="get" action="/awaria/stats" class="inline-form" id="statform">
         <span id="custom-dates" class="inline-form" style="display:{custom_display}">
           <input type="date" name="from" value="{e(custom_from)}"> —
           <input type="date" name="to" value="{e(custom_to)}"></span>
+        <select name="range">{range_options}</select>
         <label><input type="checkbox" name="weekends" value="1"
                {"checked" if include_weekends else ""}> uwzględnij weekendy</label>
-        <input type="submit" value="Pokaż">
       </form>
     </div>
     {donut}
