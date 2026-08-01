@@ -1101,7 +1101,7 @@ def render_failures_list(db, query):
         <input name="q" size="18" maxlength="80" placeholder="szukany tekst"
                value="{e(qget('q'))}">
         <input type="submit" value="Szukaj">
-        <a href="/awaria/failures">wyczyść</a>
+        <a href="/awaria/failures?clear=1">wyczyść</a>
       </form>
       <p class="muted">Eksport wyników:
         <a href="/awaria/failures.xlsx?{qs}">Excel (.xlsx)</a> ·
@@ -1244,12 +1244,19 @@ def render_stats(db, query):
         t_from, t_to = now - days * 86400, now
     t_to = min(t_to, now)
 
+    # printers the user took out of the totals, remembered between visits
+    excluded = {
+        h
+        for h in (query.get("off") or [""])[0].split(",") if h
+    }
+    # production printers only (the hall map's sections): R&D and test
+    # machines would skew the farm's utilisation numbers
     hosts = {
         r["hostname"]: r["telemetry_since"]
         for r in db.execute(
             "SELECT hostname, telemetry_since FROM printers"
             " UNION SELECT hostname, NULL FROM events WHERE hostname NOT IN (SELECT hostname FROM printers)"
-        )
+        ) if MAP_HOST_RE.match(r["hostname"])
     }
 
     rows = []
@@ -1319,8 +1326,8 @@ def render_stats(db, query):
                                               key=lambda r: host_key(r[0])):
             p, d, i = percentages(printing, down, printing + down + idle)
             printer_rows.append(
-                f"""<div class="usage-row" data-print="{printing}" data-down="{down}" data-idle="{idle}">
-              <input type="checkbox" class="p-check" checked title="Uwzględnij w sumie">
+                f"""<div class="usage-row" data-host="{e(h)}" data-print="{printing}" data-down="{down}" data-idle="{idle}">
+              <input type="checkbox" class="p-check"{'' if h in excluded else ' checked'} title="Uwzględnij w sumie">
               <a class="host" href="/awaria/printer/{urllib.parse.quote(h)}">{e(h)}</a>
               <div class="ubar">
                 <div style="width:{p:.2f}%;background:#2e7d32" title="Druk {p:.1f}% ({fmt_hours(printing)})"></div>
@@ -1386,6 +1393,25 @@ def render_stats(db, query):
       // the filters apply themselves - no "Pokaż" button to press
       const form = document.getElementById('statform');
       const dates = document.getElementById('custom-dates');
+      function formQuery(withExcluded) {
+        const p = new URLSearchParams();
+        p.set('range', form.range.value);
+        if (form.range.value === 'custom') {
+          if (form.from.value) p.set('from', form.from.value);
+          if (form.to.value) p.set('to', form.to.value);
+        }
+        if (form.weekends.checked) p.set('weekends', '1');
+        if (withExcluded) {
+          const off = [...document.querySelectorAll('.usage-row')]
+            .filter(r => !r.querySelector('.p-check').checked)
+            .map(r => r.dataset.host);
+          if (off.length) p.set('off', off.join(','));
+        }
+        return p.toString();
+      }
+
+      function go() { location.href = '/awaria/stats?' + formQuery(true); }
+
       form.range.addEventListener('change', ev => {
         const custom = ev.target.value === 'custom';
         dates.style.display = custom ? 'inline-flex' : 'none';
@@ -1394,11 +1420,19 @@ def render_stats(db, query):
           if (!form.to.value) { form.to.value = day(new Date()); }
           if (!form.from.value) { form.from.value = day(new Date(Date.now() - 30 * 86400e3)); }
         }
-        form.submit();
+        go();
       });
-      form.weekends.addEventListener('change', () => form.submit());
+      form.weekends.addEventListener('change', go);
       [form.from, form.to].forEach(el =>
-        el.addEventListener('change', () => { if (form.from.value && form.to.value) form.submit(); }));
+        el.addEventListener('change', () => { if (form.from.value && form.to.value) go(); }));
+
+      // excluding a printer is instant (no reload), so the cookie is written
+      // here; the server renders those boxes unchecked on the next visit
+      document.querySelectorAll('.p-check, .sec-check, #stmaster').forEach(b =>
+        b.addEventListener('change', () => setTimeout(() => {
+          document.cookie = 'stats=' + encodeURIComponent(formQuery(true))
+            + '; path=/awaria; max-age=31536000; samesite=lax';
+        }, 0)));
     })();
     </script>"""
 
@@ -1546,15 +1580,14 @@ def result_clause(query):
     return "(" + " OR ".join(picked) + ")"
 
 
-def prints_rows(db, query, limit=None):
-    """Print sessions matching the Historia filters (printers, range, kind,
-    result), newest first. Shared by the table and the xlsx export so what
-    you see is exactly what you get."""
+def prints_where(db, query):
+    """(where-clause, params) of the Historia filters, or None when the
+    selection can produce nothing at all."""
     known = known_printers(db)
     selected = selected_hosts_of(query, known)
     clause = result_clause(query)
     if not selected or clause is None:
-        return []
+        return None
     f_ts, t_ts = prints_window(query)[:2]
     where = ["p.started_ts >= ?", "p.started_ts < ?"]
     params = [f_ts, t_ts]
@@ -1566,9 +1599,29 @@ def prints_rows(db, query, limit=None):
         where.append("p.kind='prod'")
     if clause:
         where.append(clause)
+    return " AND ".join(where), params
+
+
+def prints_count(db, query):
+    built = prints_where(db, query)
+    if built is None:
+        return 0
+    where, params = built
+    return db.execute(f"SELECT COUNT(*) c FROM print_log p WHERE {where}",
+                      params).fetchone()["c"]
+
+
+def prints_rows(db, query, limit=None):
+    """Print sessions matching the Historia filters (printers, range, kind,
+    result), newest first. Shared by the table and the xlsx export so what
+    you see is exactly what you get."""
+    built = prints_where(db, query)
+    if built is None:
+        return []
+    where, params = built
     tail = " LIMIT ?" if limit else ""
     return db.execute(
-        f"SELECT * FROM print_log p WHERE {' AND '.join(where)}"
+        f"SELECT * FROM print_log p WHERE {where}"
         f" ORDER BY p.started_ts DESC{tail}",
         params + ([limit] if limit else [])).fetchall()
 
@@ -1837,6 +1890,8 @@ def render_history(db, query):
 
       let seq = 0;
       async function refresh(quiet) {{
+        // the partial's response carries a Set-Cookie, so the filters are
+        // remembered server-side without any storage code here
         const q = qs(), my = ++seq;
         history.replaceState(null, '', '/awaria/history?' + q);
         const plist = document.getElementById('plist');
@@ -2038,6 +2093,23 @@ def render_print_detail(db, pid):
     return page(f"GRIZZLA — wydruk {p['hostname']}", ("", meta + chart))
 
 
+def render_export_too_big(count):
+    """A refused export explains itself instead of returning a broken file
+    (or taking the server's memory down with it)."""
+    from awaria.web.exports import EXPORT_MAX_ROWS
+    body = f"""<h2>Eksport za duży</h2>
+    <div class="card">
+      <p>Wybrany zakres to <b>{count}</b> wydruków, a jednorazowo można
+      wyeksportować <b>{EXPORT_MAX_ROWS}</b>. Serwer buduje plik w pamięci —
+      większy eksport mógłby go zrestartować w trakcie zmiany.</p>
+      <p>Zawęź zakres dat albo wybór drukarek i spróbuj ponownie — historia
+      wydruków jest przechowywana bezterminowo, więc można ją pobrać
+      w częściach (np. miesiąc po miesiącu).</p>
+      <p><a href="/awaria/history">&larr; Wróć do historii</a></p>
+    </div>"""
+    return page("GRIZZLA — eksport za duży", ("", body))
+
+
 def render_files(db):
     """The g-code library's scanned metadata: slicer estimate, filament,
     weight and target sheet per file - the reference table behind the
@@ -2097,7 +2169,25 @@ def render_files(db):
         const filtered = q || m || s;
         h2.textContent = 'Pliki g-code (' + (filtered ? shown + ' z ' + total : total) + ')';
       }}
-      [search, mat, sheet].forEach(el => el.addEventListener('input', apply));
+      // this filter only hides rows already in the page - the server never
+      // sees it, so it stays in localStorage (cookies are for state the
+      // server renders, and would ride along on every request for nothing)
+      [search, mat, sheet].forEach(el => el.addEventListener('input', () => {{
+        apply();
+        try {{
+          localStorage.setItem('files_filters', JSON.stringify(
+            {{q: search.value, m: mat.value, s: sheet.value}}));
+        }} catch (err) {{}}
+      }}));
+      try {{
+        const saved = JSON.parse(localStorage.getItem('files_filters') || 'null');
+        if (saved) {{
+          search.value = saved.q || '';
+          mat.value = saved.m || '';
+          sheet.value = saved.s || '';
+          apply();
+        }}
+      }} catch (err) {{}}
     }})();
     </script>"""
     return page("GRIZZLA — pliki g-code", ("", body))

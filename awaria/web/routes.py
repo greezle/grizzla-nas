@@ -1,5 +1,6 @@
 """HTTP routing. Telemetry/SSE endpoints run outside db_lock; pages are
 rendered under it but sent after releasing it."""
+import http.cookies
 import json
 import os
 import subprocess
@@ -20,10 +21,25 @@ from awaria.web.exports import (export_failures_csv, export_failures_xlsx,
                                 export_prints_xlsx)
 from awaria.web.pages import (page, render_home, render_printer,
                               render_failure, render_failures_list,
-                              render_files, render_components, render_history,
+                              render_export_too_big, render_files,
+                              render_components, render_history,
                               render_prints_partial, render_print_detail,
                               render_stats, render_defs_list, render_def_form,
                               render_netlog, render_telemetry)
+
+
+# pages whose filters are remembered per browser. The value is the page's
+# own query string: opening a page with filters stores them, opening it bare
+# renders whatever was stored - so the server, not JavaScript, restores the
+# view (no flash of unfiltered data, and it can be tested with curl).
+STATE_COOKIES = {
+    "/awaria/history": "hist",
+    "/awaria/partial/prints": "hist",  # the list refetch carries the state
+    "/awaria/stats": "stats",
+    "/awaria/failures": "fail",
+}
+
+COOKIE_MAX_AGE = 365 * 24 * 3600
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -31,6 +47,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass  # quiet; nginx has the access log
+
+    def state_query(self, path, query):
+        """Merges the remembered filters into this request: an explicit query
+        wins (and is remembered), a bare page falls back to the cookie."""
+        name = STATE_COOKIES.get(path)
+        if not name:
+            return query
+        raw = self.path.split("?", 1)[1] if "?" in self.path else ""
+        if raw:
+            self.set_cookie = (name, urllib.parse.quote(raw, safe=""))
+            return query
+        jar = http.cookies.SimpleCookie(self.headers.get("Cookie", ""))
+        if name in jar:
+            return urllib.parse.parse_qs(
+                urllib.parse.unquote(jar[name].value))
+        return query
 
     def send_page(self, code, content, ctype="text/html; charset=utf-8",
                   filename=None):
@@ -42,6 +74,10 @@ class Handler(BaseHTTPRequestHandler):
         if filename:
             self.send_header("Content-Disposition",
                              f'attachment; filename="{filename}"')
+        if cookie := getattr(self, "set_cookie", None):
+            self.send_header(
+                "Set-Cookie", f"{cookie[0]}={cookie[1]}; Path=/awaria;"
+                f" Max-Age={COOKIE_MAX_AGE}; SameSite=Lax")
         self.end_headers()
         self.wfile.write(data)
 
@@ -78,6 +114,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.unquote(self.path.split("?")[0])
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        # handler instances are reused across keep-alive requests
+        self.set_cookie = None
+        query = self.state_query(path, query)
         try:
             m = re.fullmatch(r"/awaria/static/([A-Za-z0-9._-]+)", path)
             if m:
@@ -227,6 +266,8 @@ class Handler(BaseHTTPRequestHandler):
             if data is None:
                 return (501, "openpyxl nie jest zainstalowany na serwerze",
                         "text/plain; charset=utf-8")
+            if isinstance(data, int):  # too many rows to build safely
+                return 413, render_export_too_big(data), self.HTML
             return (200, data, "application/vnd.openxmlformats-officedocument"
                     ".spreadsheetml.sheet", "wydruki.xlsx")
         if path == "/awaria/files":

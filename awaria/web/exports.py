@@ -53,26 +53,47 @@ RESULT_TEXT = {
 }
 
 
+# a workbook is built in memory, and the service runs under MemoryMax=200M:
+# beyond this many rows the export is refused with an explanation instead of
+# risking an OOM restart of the whole panel mid-shift
+EXPORT_MAX_ROWS = 20000
+
+
 def export_prints_xlsx(db, query):
-    """The Historia table as a workbook - same filters, same rows, no cap
-    (the on-screen list stops at PRINTS_LIMIT, the export does not)."""
+    """The Historia table as a workbook - same filters, same rows, without
+    the on-screen display cap. Returns None when openpyxl is missing, or the
+    row count (an int) when the selection is too large to build safely."""
     try:
         import openpyxl
+        from openpyxl.cell import WriteOnlyCell
+        from openpyxl.styles import Font
         from openpyxl.utils import get_column_letter
     except ImportError:
         return None
     # imported here: pages imports nothing from this module, so this stays a
     # one-way dependency
-    from awaria.web.pages import (gcode_meta_index, meta_of_print, prints_rows)
+    from awaria.web.pages import (gcode_meta_index, meta_of_print,
+                                  prints_count, prints_rows)
+
+    total = prints_count(db, query)
+    if total > EXPORT_MAX_ROWS:
+        return total
 
     meta_idx = gcode_meta_index(db)
     now = int(time.time())
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Wydruki"
-    ws.append(PRINTS_HEADER)
-    for cell in ws[1]:
-        cell.font = openpyxl.styles.Font(bold=True)
+    # write-only mode streams rows out instead of holding a cell object per
+    # value - the difference that keeps a big export inside the memory cap
+    wb = openpyxl.Workbook(write_only=True)
+    ws = wb.create_sheet("Wydruki")
+    for i, width in enumerate([10, 52, 19, 19, 9, 17, 11, 9, 14, 12], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+    ws.freeze_panes = "A2"
+    header = []
+    for title in PRINTS_HEADER:
+        cell = WriteOnlyCell(ws, value=title)
+        cell.font = Font(bold=True)
+        header.append(cell)
+    ws.append(header)
     for p in prints_rows(db, query):
         meta = meta_of_print(meta_idx, p["file"])
         hours = round(((p["ended_ts"] or now) - (p["started_ts"] or now)) /
@@ -86,9 +107,6 @@ def export_prints_xlsx(db, query):
             (meta["filament"] if meta else None) or p["material"] or "",
             (meta["sheet"] if meta else "") or ""
         ])
-    for i, width in enumerate([10, 52, 19, 19, 9, 17, 11, 9, 14, 12], start=1):
-        ws.column_dimensions[get_column_letter(i)].width = width
-    ws.freeze_panes = "A2"
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
