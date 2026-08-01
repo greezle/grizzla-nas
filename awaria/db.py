@@ -480,10 +480,19 @@ def migrate_8_gcode_meta(db):
         scanned_at TEXT)""")
 
 
+def migrate_9_filament_profile(db):
+    """gcode_meta.fil_profile keeps the raw slicer profile id; filament now
+    holds the farm's canonical material (30D / 95A / Matt 95A / PLA / PETG),
+    so prints are comparable across profiles. Clearing the table makes the
+    scanner reparse the library with the new rules on the next pass."""
+    add_column(db, "gcode_meta", "fil_profile TEXT")
+    db.execute("DELETE FROM gcode_meta")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
     migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments,
-    migrate_7_print_result, migrate_8_gcode_meta
+    migrate_7_print_result, migrate_8_gcode_meta, migrate_9_filament_profile
 ]
 
 

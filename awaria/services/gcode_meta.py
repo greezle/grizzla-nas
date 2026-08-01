@@ -41,26 +41,49 @@ def parse_est(text):
     return total or None
 
 
+# plain material names, tried after the shore-hardness patterns
+PLAIN_MATERIALS = ("PETG", "PLA", "ASA", "ABS", "PCCF", "PVB", "HIPS", "PA",
+                   "PC", "PP", "TPU", "FLEX")
+
+
+def canonical_filament(profile, ftype):
+    """The farm's own material vocabulary out of whatever the slicer profile
+    happens to be called: 'Hello3D Matt 95A' -> 'Matt 95A', 'Fiberflex 30D
+    LGX coldbend' -> '30D', 'Impact PLA' -> 'PLA'. Shore hardness wins over
+    the coarse filament_type (which just says FLEX for every soft filament),
+    so prints become comparable and filterable across profiles."""
+    text = f"{profile or ''} {ftype or ''}".lower()
+    matt = "matt" in text
+    for pattern, unit in ((r"(?<!\d)(\d{2,3})\s*a\b", "A"),
+                          (r"(?<!\d)(\d{2,3})\s*d\b", "D")):
+        if m := re.search(pattern, text):
+            return ("Matt " if matt else "") + m.group(1) + unit
+    for name in PLAIN_MATERIALS:
+        if name.lower() in text:
+            return ("Matt " + name) if matt else name
+    return (ftype or profile or "").strip()[:24] or None
+
+
 def parse_gcode(full_path):
-    """(est_s, filament, fil_g, sheet) from head+tail of one file."""
+    """(est_s, profile, ftype, filament, fil_g, sheet) from head+tail."""
     with open(full_path, "rb") as f:
         head = f.read(HEAD_BYTES).decode("utf-8", "replace")
         f.seek(0, os.SEEK_END)
         f.seek(max(0, f.tell() - TAIL_BYTES))
         tail = f.read().decode("utf-8", "replace")
-    est_s = filament = fil_g = sheet = None
+    est_s = profile = ftype = fil_g = sheet = None
     if m := EST_RE.search(tail):
         est_s = parse_est(m.group(1))
-    # profile name ("Hello3D 95A") beats the coarse type ("FLEX")
     if m := FIL_ID_RE.search(tail):
-        filament = m.group(1).strip()[:24]
-    elif m := FILAMENT_RE.search(tail):
-        filament = m.group(1).strip()[:24]
+        profile = m.group(1).strip()[:40]
+    if m := FILAMENT_RE.search(tail):
+        ftype = m.group(1).strip()[:24]
+    filament = canonical_filament(profile, ftype)
     if m := FIL_G_RE.search(tail):
         fil_g = float(m.group(1))
     if m := SHEET_RE.search(head):
         sheet = SHEET_NAMES.get(int(m.group(1)))
-    return est_s, filament, fil_g, sheet
+    return est_s, profile, filament, fil_g, sheet
 
 
 def scan_library():
@@ -95,19 +118,19 @@ def scan_library():
     for rel in stale:
         full, size, mtime = on_disk[rel]
         try:
-            est_s, filament, fil_g, sheet = parse_gcode(full)
+            est_s, profile, filament, fil_g, sheet = parse_gcode(full)
         except OSError:
             continue
-        parsed.append(
-            (rel, size, mtime, est_s, filament, fil_g, sheet, now_str()))
+        parsed.append((rel, size, mtime, est_s, profile, filament, fil_g,
+                       sheet, now_str()))
 
     gone = [rel for rel in known if rel not in on_disk]
     if parsed or gone:
         with db_lock, open_db() as db:
             db.executemany(
                 "INSERT OR REPLACE INTO gcode_meta"
-                " (path, size, mtime_ns, est_s, filament, fil_g, sheet,"
-                "  scanned_at) VALUES (?,?,?,?,?,?,?,?)", parsed)
+                " (path, size, mtime_ns, est_s, fil_profile, filament, fil_g,"
+                "  sheet, scanned_at) VALUES (?,?,?,?,?,?,?,?,?)", parsed)
             db.executemany("DELETE FROM gcode_meta WHERE path=?",
                            ((rel, ) for rel in gone))
             db.commit()

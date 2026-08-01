@@ -208,12 +208,17 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
                          the absolute fill escapes and floods the page */ }
 .b-printing { padding: 0; background: #37474f; overflow: hidden; }
 .b-printing i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ok);
-  transition: width .5s ease; }
-.b-printing b { position: relative; font-size: 12px; font-weight: 700; color: #fff;
-  text-shadow: 0 1px 2px rgba(0,0,0,.55); letter-spacing: .2px; }
-.b-printing.indet i { width: 100%; animation: indet 1.1s linear infinite;
-  background: repeating-linear-gradient(115deg, var(--ok) 0 9px, #23603a 9px 18px); }
-@keyframes indet { from { background-position: 0 0; } to { background-position: 38px 0; } }
+  overflow: hidden; transition: width .5s ease; }
+/* Windows-style sheen sweeping across the filled part */
+.b-printing i::after { content: ''; position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 15%, rgba(255,255,255,.55) 50%,
+    transparent 85%); animation: sheen 1.9s ease-in-out infinite; }
+@keyframes sheen { from { transform: translateX(-110%); } to { transform: translateX(110%); } }
+.b-printing b { position: relative; font-size: 13px; font-weight: 700; color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.55); }
+.b-printing.indet i { width: 100%; background: repeating-linear-gradient(115deg,
+  var(--ok) 0 9px, #23603a 9px 18px); }
+@media (prefers-reduced-motion: reduce) { .b-printing i::after { animation: none; } }
 .gico { vertical-align: middle; }
 a:hover .gico polyline { stroke: #d32f2f; }
 main { padding: 16px 20px 64px; max-width: 1200px; margin: 0 auto; }
@@ -1468,12 +1473,28 @@ HISTORY_ZONES = [["N", "M", "L"], ["A", "B", "C", "D", "E"], ["G", "H", "I"],
 PRINTS_LIMIT = 1000
 
 
+MAP_HOST_RE = re.compile("^[" + "".join(s for z in HISTORY_ZONES
+                                        for s in z) + r"][1-6]$")
+
+
 def known_printers(db):
+    """Production printers only - the ones that sit on the hall map. R&D and
+    test machines exist in the database but nobody browses their print
+    history, so Historia ignores them entirely (user, 2026-08-01)."""
     return [
         r["hostname"] for r in db.execute(
             "SELECT hostname FROM printers"
             " UNION SELECT DISTINCT hostname FROM print_log ORDER BY 1")
+        if MAP_HOST_RE.match(r["hostname"])
     ]
+
+
+RESULT_FILTERS = {
+    "ok": "p.result IN ('finished', 'finished?')",
+    "run": "p.ended_at IS NULL",
+    "bad": "p.result IN ('aborted', 'aborted?')",
+    "unknown": "p.ended_at IS NOT NULL AND p.result IS NULL",
+}
 
 
 def result_badge(p, progress=None):
@@ -1569,11 +1590,14 @@ def render_prints_partial(db, query):
         return '<div class="empty">Nie zaznaczono żadnej drukarki.</div>'
     where = ["p.started_ts >= ?", "p.started_ts < ?"]
     params = [f_ts, t_ts]
-    if len(selected) < len(known):
-        where.append("p.hostname IN (%s)" % ",".join("?" * len(selected)))
-        params += sorted(selected)
+    # always constrained to the selection: "everything" still means the map's
+    # printers only, never the R&D/test machines
+    where.append("p.hostname IN (%s)" % ",".join("?" * len(selected)))
+    params += sorted(selected)
     if not query.get("all"):
         where.append("p.kind='prod'")
+    if clause := RESULT_FILTERS.get((query.get("res") or [""])[0]):
+        where.append(clause)
     rows = db.execute(
         f"SELECT * FROM print_log p WHERE {' AND '.join(where)}"
         " ORDER BY p.started_ts DESC LIMIT ?",
@@ -1652,24 +1676,17 @@ def render_history(db, query):
                 f'<div class="section"><div class="sec-label">{sec_box}</div>'
                 f'<div class="sec-grid">{"".join(cells)}</div></div>')
         zones_html.append(f'<div class="zone">{"".join(secs)}</div>')
-    extras = [h for h in known if h not in mapped]
-    extras_html = ""
-    if extras:
-        boxes = "".join(
-            f'<label class="sq selsq wide"><input type="checkbox"'
-            f' class="selbox" value="{e(h)}"'
-            f'{" checked" if h in selected else ""}>{e(h)}</label>'
-            for h in extras)
-        extras_html = (
-            '<div class="section"><div class="sec-label">'
-            '<label class="sec-pick"><input type="checkbox" class="secbox"'
-            f' data-hosts="{e(",".join(extras))}"> inne</label></div>'
-            f'<div class="sec-grid extras">{boxes}</div></div>')
-
     ranges_html = "".join(
         f'<option value="{v}"{" selected" if rng == v else ""}>{t}</option>'
         for v, t in (("1d", "1 dzień"), ("7d", "1 tydzień"),
                      ("30d", "1 miesiąc"), ("custom", "zakres dat")))
+
+    res = (query.get("res") or [""])[0]
+    res_html = "".join(
+        f'<option value="{v}"{" selected" if res == v else ""}>{t}</option>'
+        for v, t in (("", "wszystkie wyniki"), ("ok", "ukończone"),
+                     ("run", "w trakcie"), ("bad", "anulowane"),
+                     ("unknown", "nieznane")))
 
     body = f"""
     <div class="sec-head"><h2>Historia wydruków</h2>
@@ -1679,12 +1696,13 @@ def render_history(db, query):
           do <input type="date" id="dto" value="{e(date_to)}">
         </span>
         <select id="rng" title="Zakres czasu">{ranges_html}</select>
+        <select id="res" title="Wynik wydruku">{res_html}</select>
         <label><input type="checkbox" id="showall"{' checked' if show_all else ''}>
           testy i serwisowe</label>
       </div>
     </div>
     <div class="card">
-      <div class="farm-map selmap">{''.join(zones_html)}{extras_html}</div>
+      <div class="farm-map selmap">{''.join(zones_html)}</div>
       <div class="inline-form" style="margin-top:10px">
         <label class="sec-pick"><input type="checkbox" id="selmaster">
           <b>wszystkie drukarki</b></label>
@@ -1726,6 +1744,8 @@ def render_history(db, query):
           if (t) p.set('dto', t);
         }}
         if (document.getElementById('showall').checked) p.set('all', '1');
+        const res = document.getElementById('res').value;
+        if (res) p.set('res', res);
         return p.toString();
       }}
 
@@ -1771,6 +1791,7 @@ def render_history(db, query):
       ['dfrom', 'dto'].forEach(id =>
         document.getElementById(id).addEventListener('change', refresh));
       document.getElementById('showall').addEventListener('change', refresh);
+      document.getElementById('res').addEventListener('change', refresh);
       document.getElementById('selmaster').addEventListener('change',
         ev => setAll(ev.target.checked));
       syncSections();
@@ -1901,36 +1922,58 @@ def render_files(db):
     trs = []
     for r in rows:
         grams = f"{r['fil_g']:.0f} g" if r["fil_g"] else "—"
+        profile = r["fil_profile"] if "fil_profile" in r.keys() else None
         trs.append(f"<tr><td>{e(r['path'])}</td>"
                    f"<td>{fmt_dur(r['est_s'])}</td>"
-                   f"<td>{e(r['filament'] or '—')}</td>"
+                   f'<td title="{e(profile or "")}">{e(r["filament"] or "—")}</td>'
                    f"<td>{grams}</td>"
                    f"<td>{e(r['sheet'] or '—')}</td></tr>")
     table = ("<table><tr><th>Plik</th><th>Szac. czas</th><th>Filament</th>"
              f"<th>Zużycie</th><th>Podkładka</th></tr>{''.join(trs)}</table>"
              if trs else
              '<div class="empty">Skaner jeszcze nie przeszedł biblioteki.</div>')
+    materials = sorted({r["filament"] for r in rows if r["filament"]})
+    mat_opts = '<option value="">— filament —</option>' + "".join(
+        f"<option>{e(m)}</option>" for m in materials)
+    sheets = sorted({r["sheet"] for r in rows if r["sheet"]})
+    sheet_opts = '<option value="">— podkładka —</option>' + "".join(
+        f"<option>{e(s)}</option>" for s in sheets)
     body = f"""<div class="sec-head"><h2>Pliki g-code ({len(rows)})</h2>
-      <input id="fsearch" type="text" placeholder="filtruj: nazwa, filament, podkładka..."
-             style="min-width:300px" autofocus></div>
+      <div class="inline-form">
+        <select id="fmat">{mat_opts}</select>
+        <select id="fsheet">{sheet_opts}</select>
+        <input id="fsearch" type="text" placeholder="szukaj w nazwie pliku..."
+               style="min-width:240px" autofocus>
+      </div></div>
     <p class="muted">Metadane czytane wprost z plików na NAS (stopka slicera +
-    M9203 w starcie); odświeżane co 15 min. Wydruk krótszy o więcej niż 6% od
-    szacowanego czasu jest oznaczany jako anulowany.</p>
+    M9203 w starcie); odświeżane co 15 min. Filament sprowadzony do wspólnego
+    nazewnictwa (30D, 95A, Matt 95A, PLA, PETG...) — pełny profil slicera
+    pokazuje się po najechaniu. Wydruk krótszy o więcej niż 6% od szacowanego
+    czasu jest oznaczany jako anulowany.</p>
     {table}
     <script>
     (function() {{
       const rows = [...document.querySelectorAll('table tr')].slice(1);
       const h2 = document.querySelector('.sec-head h2'), total = {len(rows)};
-      document.getElementById('fsearch').addEventListener('input', ev => {{
-        const q = ev.target.value.trim().toLowerCase();
+      const search = document.getElementById('fsearch'),
+            mat = document.getElementById('fmat'),
+            sheet = document.getElementById('fsheet');
+      function apply() {{
+        const q = search.value.trim().toLowerCase();
+        const m = mat.value, s = sheet.value;
         let shown = 0;
         rows.forEach(r => {{
-          const hit = !q || r.textContent.toLowerCase().includes(q);
+          const cells = r.children;
+          const hit = (!q || cells[0].textContent.toLowerCase().includes(q))
+            && (!m || cells[2].textContent.trim() === m)
+            && (!s || cells[4].textContent.trim() === s);
           r.style.display = hit ? '' : 'none';
           if (hit) {{ shown++; }}
         }});
-        h2.textContent = 'Pliki g-code (' + (q ? shown + ' z ' + total : total) + ')';
-      }});
+        const filtered = q || m || s;
+        h2.textContent = 'Pliki g-code (' + (filtered ? shown + ' z ' + total : total) + ')';
+      }}
+      [search, mat, sheet].forEach(el => el.addEventListener('input', apply));
     }})();
     </script>"""
     return page("GRIZZLA — pliki g-code", ("", body))
