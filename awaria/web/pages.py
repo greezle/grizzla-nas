@@ -203,7 +203,9 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 /* every verdict badge is the same pill; a running print is that pill filled
    as a progress bar (no label - the bar says it), like the map squares */
 .badge.b-result { display: inline-flex; align-items: center; justify-content: center;
-  min-width: 92px; height: 20px; padding: 0 9px; box-sizing: border-box; }
+  min-width: 92px; height: 20px; padding: 0 9px; box-sizing: border-box;
+  position: relative; /* containing block for the progress fill - without it
+                         the absolute fill escapes and floods the page */ }
 .b-printing { padding: 0; background: #37474f; overflow: hidden; }
 .b-printing i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ok);
   transition: width .5s ease; }
@@ -1824,7 +1826,7 @@ def render_print_detail(db, pid):
     chart = f"""
     <div class="card" style="flex-basis:100%">
       <h3 style="margin-top:0">Temperatury
-        <span style="float:right;font-weight:400;font-size:13px">
+        <span style="float:right;font-weight:400;font-size:13px;text-transform:none">
           <button class="zbtn" id="zin" title="Przybliż">+</button>
           <button class="zbtn" id="zout" title="Oddal">&minus;</button>
           <button class="zbtn" id="zreset" title="Cały wydruk">&#10226;</button>
