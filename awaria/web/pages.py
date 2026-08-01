@@ -204,11 +204,13 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
    as a progress bar (no label - the bar says it), like the map squares */
 .badge.b-result { display: inline-flex; align-items: center; justify-content: center;
   min-width: 92px; height: 20px; padding: 0 9px; box-sizing: border-box; }
-.b-printing { justify-content: flex-start; padding: 0; background: #cbdfcc; overflow: hidden; }
-.b-printing i { display: block; height: 100%; background: var(--ok);
-  animation: prog-pulse 1.6s ease-in-out infinite; }
+.b-printing { padding: 0; background: #37474f; overflow: hidden; }
+.b-printing i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ok);
+  transition: width .5s ease; }
+.b-printing b { position: relative; font-size: 12px; font-weight: 700; color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.55); letter-spacing: .2px; }
 .b-printing.indet i { width: 100%; animation: indet 1.1s linear infinite;
-  background: repeating-linear-gradient(115deg, var(--ok) 0 9px, #6fa273 9px 18px); }
+  background: repeating-linear-gradient(115deg, var(--ok) 0 9px, #23603a 9px 18px); }
 @keyframes indet { from { background-position: 0 0; } to { background-position: 38px 0; } }
 .gico { vertical-align: middle; }
 a:hover .gico polyline { stroke: #d32f2f; }
@@ -1480,10 +1482,11 @@ def result_badge(p, progress=None):
     if not p["ended_at"]:
         if progress is None:  # printing, percent not (yet) in telemetry
             return ('<span class="badge b-result b-printing indet"'
-                    ' title="Drukuje — brak danych o postępie"><i></i></span>')
-        width = max(progress, 6)  # a sliver stays visible near 0%
+                    ' title="Drukuje — brak danych o postępie">'
+                    '<i></i><b>drukuje</b></span>')
         return (f'<span class="badge b-result b-printing" title="Drukuje'
-                f' — {progress:.0f}%"><i style="width:{width:.0f}%"></i></span>')
+                f' — {progress:.0f}%"><i style="width:{progress:.0f}%"></i>'
+                f'<b>{progress:.0f}%</b></span>')
     result = p["result"] if "result" in p.keys() else None
     inferred = (' title="Wynik z porównania czasu wydruku z szacowanym'
                 ' czasem pliku (koniec nie został zarejestrowany na żywo)"')
