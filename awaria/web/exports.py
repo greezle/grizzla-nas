@@ -40,6 +40,60 @@ def export_failures_csv(db, query):
     return "﻿" + out.getvalue()
 
 
+PRINTS_HEADER = [
+    "Drukarka", "Plik", "Start", "Koniec", "Czas [h]", "Szacowany czas [h]",
+    "Wynik", "Rodzaj", "Filament", "Podkładka"
+]
+
+RESULT_TEXT = {
+    "finished": "ukończony",
+    "finished?": "ukończony",
+    "aborted": "anulowany",
+    "aborted?": "anulowany",
+}
+
+
+def export_prints_xlsx(db, query):
+    """The Historia table as a workbook - same filters, same rows, no cap
+    (the on-screen list stops at PRINTS_LIMIT, the export does not)."""
+    try:
+        import openpyxl
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return None
+    # imported here: pages imports nothing from this module, so this stays a
+    # one-way dependency
+    from awaria.web.pages import (gcode_meta_index, meta_of_print, prints_rows)
+
+    meta_idx = gcode_meta_index(db)
+    now = int(time.time())
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Wydruki"
+    ws.append(PRINTS_HEADER)
+    for cell in ws[1]:
+        cell.font = openpyxl.styles.Font(bold=True)
+    for p in prints_rows(db, query):
+        meta = meta_of_print(meta_idx, p["file"])
+        hours = round(((p["ended_ts"] or now) - (p["started_ts"] or now)) /
+                      3600, 2)
+        ws.append([
+            p["hostname"], p["file"], p["started_at"], p["ended_at"] or "",
+            hours,
+            round(meta["est_s"] / 3600, 2) if meta and meta["est_s"] else "",
+            "w trakcie" if not p["ended_at"] else RESULT_TEXT.get(
+                p["result"], "nieznany"), p["kind"],
+            (meta["filament"] if meta else None) or p["material"] or "",
+            (meta["sheet"] if meta else "") or ""
+        ])
+    for i, width in enumerate([10, 52, 19, 19, 9, 17, 11, 9, 14, 12], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def export_failures_xlsx(db, query):
     """Returns the workbook bytes, or None when openpyxl is unavailable
     (it is on the NAS - the g-code publisher already depends on it)."""

@@ -584,6 +584,22 @@ def track_print_sessions(host, fname, end_state=None):
     bus.publish("printers", host)
 
 
+def live_progress(max_age=90):
+    """{hostname: percent} for printers currently printing - the Historia
+    list polls this so its progress bars advance without a page reload."""
+    out = {}
+    cutoff = time.time() - max_age
+    with live_lock:
+        for host, entry in LIVE.items():
+            if entry.get("updated", 0) < cutoff:
+                continue
+            values = entry["values"]
+            pct = values.get("print_progress")
+            if values.get("print_filename") and isinstance(pct, float):
+                out[host] = pct
+    return out
+
+
 def live_of(host, max_age=90):
     """Latest telemetry of a printer, or None when stale/absent."""
     with live_lock:

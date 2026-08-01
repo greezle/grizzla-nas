@@ -14,8 +14,10 @@ from awaria.db import db_lock, net_log, open_db, now_str, now_pair, to_epoch_or_
 from awaria.services import bus
 from awaria.services.catalog import render_catalog, save_def, reorder_defs
 from awaria.services.failures import handle_event, screen_note_for
-from awaria.services.telemetry import (history_columns, samples_columns)
-from awaria.web.exports import export_failures_csv, export_failures_xlsx
+from awaria.services.telemetry import (history_columns, live_progress,
+                                       samples_columns)
+from awaria.web.exports import (export_failures_csv, export_failures_xlsx,
+                                export_prints_xlsx)
 from awaria.web.pages import (page, render_home, render_printer,
                               render_failure, render_failures_list,
                               render_files, render_components, render_history,
@@ -97,6 +99,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/awaria/api/stream":
                 return self.serve_stream()
+
+            if path == "/awaria/api/progress.json":
+                # in-memory only; keeps the Historia bars moving
+                return self.send_json(200, live_progress())
 
             # live-telemetry endpoints touch only in-memory state / their own
             # database - they neither need nor should wait for db_lock
@@ -216,6 +222,13 @@ class Handler(BaseHTTPRequestHandler):
             return 200, render_history(db, query), self.HTML
         if path == "/awaria/partial/prints":
             return 200, render_prints_partial(db, query), self.HTML
+        if path == "/awaria/history.xlsx":
+            data = export_prints_xlsx(db, query)
+            if data is None:
+                return (501, "openpyxl nie jest zainstalowany na serwerze",
+                        "text/plain; charset=utf-8")
+            return (200, data, "application/vnd.openxmlformats-officedocument"
+                    ".spreadsheetml.sheet", "wydruki.xlsx")
         if path == "/awaria/files":
             return 200, render_files(db), self.HTML
         m = re.fullmatch(r"/awaria/print/(\d+)", path)

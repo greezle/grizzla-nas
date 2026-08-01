@@ -243,6 +243,18 @@ form.wizard fieldset { margin: 12px 0; border: 1px solid #ccc; }
 form.wizard input, form.wizard select { padding: 3px 5px; }
 form.wizard table td { border: none; padding: 3px 6px; }
 #plist.loading { opacity: .45; transition: opacity .15s ease; }
+.dd { position: relative; display: inline-block; }
+.dd .caret { font-size: 10px; opacity: .7; }
+.dd-panel { display: none; position: absolute; right: 0; top: calc(100% + 4px); z-index: 12;
+  background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 6px 4px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18); min-width: 160px; }
+.dd.open .dd-panel { display: block; }
+.dd-panel label { display: block; padding: 5px 10px; border-radius: 4px; white-space: nowrap;
+  cursor: pointer; font-size: 14px; }
+.dd-panel label:hover { background: #f0f0f0; }
+.btn-link { display: inline-block; font-size: 14px; font-weight: 600; text-decoration: none;
+  color: #fff; background: var(--accent); padding: 5px 12px; border-radius: 4px; }
+.btn-link:hover { background: #0d4f9e; }
 """
 
 
@@ -1497,6 +1509,52 @@ RESULT_FILTERS = {
 }
 
 
+RESULT_LABELS = (("ok", "ukończone"), ("run", "w trakcie"),
+                 ("bad", "anulowane"), ("unknown", "nieznane"))
+
+
+def result_clause(query):
+    """WHERE fragment for the selected result states: absent = all states,
+    '-' = none (the user unchecked everything), else an OR of the picked
+    ones. None means 'no rows at all'."""
+    raw = (query.get("res") or [""])[0].strip()
+    if not raw:
+        return ""
+    if raw == "-":
+        return None
+    picked = [RESULT_FILTERS[k] for k in raw.split(",") if k in RESULT_FILTERS]
+    if not picked or len(picked) == len(RESULT_FILTERS):
+        return ""
+    return "(" + " OR ".join(picked) + ")"
+
+
+def prints_rows(db, query, limit=None):
+    """Print sessions matching the Historia filters (printers, range, kind,
+    result), newest first. Shared by the table and the xlsx export so what
+    you see is exactly what you get."""
+    known = known_printers(db)
+    selected = selected_hosts_of(query, known)
+    clause = result_clause(query)
+    if not selected or clause is None:
+        return []
+    f_ts, t_ts = prints_window(query)[:2]
+    where = ["p.started_ts >= ?", "p.started_ts < ?"]
+    params = [f_ts, t_ts]
+    # always constrained to the selection: "everything" still means the map's
+    # printers only, never the R&D/test machines
+    where.append("p.hostname IN (%s)" % ",".join("?" * len(selected)))
+    params += sorted(selected)
+    if not query.get("all"):
+        where.append("p.kind='prod'")
+    if clause:
+        where.append(clause)
+    tail = " LIMIT ?" if limit else ""
+    return db.execute(
+        f"SELECT * FROM print_log p WHERE {' AND '.join(where)}"
+        f" ORDER BY p.started_ts DESC{tail}",
+        params + ([limit] if limit else [])).fetchall()
+
+
 def result_badge(p, progress=None):
     """How the print ended (print_log.result, recorded forever). All result
     badges share one width; a running print speaks the farm map's language:
@@ -1583,25 +1641,11 @@ def meta_of_print(meta_idx, fname):
 
 def render_prints_partial(db, query):
     """Just the prints table - the map/range controls refetch this."""
-    known = known_printers(db)
-    selected = selected_hosts_of(query, known)
-    f_ts, t_ts = prints_window(query)[:2]
-    if not selected:
+    if not selected_hosts_of(query, known_printers(db)):
         return '<div class="empty">Nie zaznaczono żadnej drukarki.</div>'
-    where = ["p.started_ts >= ?", "p.started_ts < ?"]
-    params = [f_ts, t_ts]
-    # always constrained to the selection: "everything" still means the map's
-    # printers only, never the R&D/test machines
-    where.append("p.hostname IN (%s)" % ",".join("?" * len(selected)))
-    params += sorted(selected)
-    if not query.get("all"):
-        where.append("p.kind='prod'")
-    if clause := RESULT_FILTERS.get((query.get("res") or [""])[0]):
-        where.append(clause)
-    rows = db.execute(
-        f"SELECT * FROM print_log p WHERE {' AND '.join(where)}"
-        " ORDER BY p.started_ts DESC LIMIT ?",
-        params + [PRINTS_LIMIT + 1]).fetchall()
+    if result_clause(query) is None:
+        return '<div class="empty">Nie wybrano żadnego wyniku wydruku.</div>'
+    rows = prints_rows(db, query, PRINTS_LIMIT + 1)
     truncated = len(rows) > PRINTS_LIMIT
     rows = rows[:PRINTS_LIMIT]
     if not rows:
@@ -1624,7 +1668,7 @@ def render_prints_partial(db, query):
             v = live[0].get("print_progress")
             if isinstance(v, float):
                 progress = v
-        trs.append(f"""<tr>
+        trs.append(f"""<tr data-host="{e(p['hostname'])}">
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
             <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b>{kind_badge(p)}</td>
             <td class="age">{e(p['started_at'])}</td>
@@ -1681,12 +1725,13 @@ def render_history(db, query):
         for v, t in (("1d", "1 dzień"), ("7d", "1 tydzień"),
                      ("30d", "1 miesiąc"), ("custom", "zakres dat")))
 
-    res = (query.get("res") or [""])[0]
+    res = (query.get("res") or [""])[0].strip()
+    picked = set(res.split(",")) if res and res != "-" else (
+        set() if res == "-" else set(RESULT_FILTERS))
     res_html = "".join(
-        f'<option value="{v}"{" selected" if res == v else ""}>{t}</option>'
-        for v, t in (("", "wszystkie wyniki"), ("ok", "ukończone"),
-                     ("run", "w trakcie"), ("bad", "anulowane"),
-                     ("unknown", "nieznane")))
+        f'<label><input type="checkbox" class="resbox" value="{v}"'
+        f'{" checked" if v in picked else ""}> {t}</label>'
+        for v, t in RESULT_LABELS)
 
     body = f"""
     <div class="sec-head"><h2>Historia wydruków</h2>
@@ -1696,7 +1741,11 @@ def render_history(db, query):
           do <input type="date" id="dto" value="{e(date_to)}">
         </span>
         <select id="rng" title="Zakres czasu">{ranges_html}</select>
-        <select id="res" title="Wynik wydruku">{res_html}</select>
+        <div class="dd" id="resdd">
+          <button type="button" id="resbtn" title="Które wyniki pokazać">
+            wszystkie wyniki <span class="caret">&#9662;</span></button>
+          <div class="dd-panel">{res_html}</div>
+        </div>
         <label><input type="checkbox" id="showall"{' checked' if show_all else ''}>
           testy i serwisowe</label>
       </div>
@@ -1707,6 +1756,9 @@ def render_history(db, query):
         <label class="sec-pick"><input type="checkbox" id="selmaster">
           <b>wszystkie drukarki</b></label>
       </div>
+    </div>
+    <div class="sec-head" style="margin-top:16px"><h2 style="font-size:15px">Wydruki</h2>
+      <a id="xlsx" class="btn-link" href="/awaria/history.xlsx">&#8681; Eksport XLSX</a>
     </div>
     <div id="plist">{render_prints_partial(db, query)}</div>
     <p class="muted">Lista wydruków (plik, czas, wynik) jest przechowywana
@@ -1744,22 +1796,60 @@ def render_history(db, query):
           if (t) p.set('dto', t);
         }}
         if (document.getElementById('showall').checked) p.set('all', '1');
-        const res = document.getElementById('res').value;
-        if (res) p.set('res', res);
+        const states = [...document.querySelectorAll('.resbox')];
+        const on = states.filter(b => b.checked).map(b => b.value);
+        if (on.length === 0) p.set('res', '-');
+        else if (on.length < states.length) p.set('res', on.join(','));
         return p.toString();
       }}
 
+      function syncResLabel() {{
+        const states = [...document.querySelectorAll('.resbox')];
+        const on = states.filter(b => b.checked);
+        const text = on.length === states.length ? 'wszystkie wyniki'
+          : on.length === 0 ? 'brak wyników'
+          : on.length === 1 ? on[0].parentNode.textContent.trim()
+          : on.length + ' wyniki';
+        document.getElementById('resbtn').innerHTML =
+          text + ' <span class="caret">&#9662;</span>';
+      }}
+
       let seq = 0;
-      async function refresh() {{
+      async function refresh(quiet) {{
         const q = qs(), my = ++seq;
         history.replaceState(null, '', '/awaria/history?' + q);
+        document.getElementById('xlsx').href = '/awaria/history.xlsx?' + q;
         const plist = document.getElementById('plist');
-        plist.classList.add('loading');
+        if (!quiet) plist.classList.add('loading');
         const r = await fetch('/awaria/partial/prints?' + q);
         if (my !== seq) return;
         if (r.ok) plist.innerHTML = await r.text();
         plist.classList.remove('loading');
       }}
+
+      // running prints tick without touching the page: the percentages come
+      // from a tiny endpoint every 10 s, and the list itself re-fetches on
+      // server nudges (SSE) plus a slow fallback, so finished prints flip
+      // to their verdict on their own
+      async function tickProgress() {{
+        let live;
+        try {{
+          live = await (await fetch('/awaria/api/progress.json')).json();
+        }} catch (err) {{ return; }}
+        document.querySelectorAll('#plist tr[data-host]').forEach(tr => {{
+          const bar = tr.querySelector('.b-printing');
+          const pct = live[tr.dataset.host];
+          if (!bar || typeof pct !== 'number') return;
+          const fill = bar.querySelector('i'), num = bar.querySelector('b');
+          bar.classList.remove('indet');
+          fill.style.width = Math.round(pct) + '%';
+          if (num) num.textContent = Math.round(pct) + '%';
+          bar.title = 'Drukuje — ' + Math.round(pct) + '%';
+        }});
+      }}
+      setInterval(tickProgress, 10000);
+      setInterval(() => refresh(true), 120000);
+      window.softRefresh = () => refresh(true); // SSE nudges from the server
 
       function setAll(on) {{
         boxes().forEach(b => b.checked = on);
@@ -1790,11 +1880,26 @@ def render_history(db, query):
       }});
       ['dfrom', 'dto'].forEach(id =>
         document.getElementById(id).addEventListener('change', refresh));
-      document.getElementById('showall').addEventListener('change', refresh);
-      document.getElementById('res').addEventListener('change', refresh);
+      document.getElementById('showall').addEventListener('change', () => refresh());
+      document.querySelectorAll('.resbox').forEach(b =>
+        b.addEventListener('change', () => {{ syncResLabel(); refresh(); }}));
+      document.getElementById('resbtn').addEventListener('click', ev => {{
+        ev.stopPropagation();
+        document.getElementById('resdd').classList.toggle('open');
+      }});
+      document.addEventListener('click', ev => {{
+        if (!ev.target.closest('#resdd')) {{
+          document.getElementById('resdd').classList.remove('open');
+        }}
+      }});
+      document.addEventListener('keydown', ev => {{
+        if (ev.key === 'Escape') document.getElementById('resdd').classList.remove('open');
+      }});
       document.getElementById('selmaster').addEventListener('change',
         ev => setAll(ev.target.checked));
       syncSections();
+      syncResLabel();
+      document.getElementById('xlsx').href = '/awaria/history.xlsx?' + qs();
     }})();
     </script>"""
     return page("GRIZZLA — historia", ("", body))
