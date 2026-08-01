@@ -200,7 +200,12 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .b-block { background: #d32f2f; color: #fff; }
 .b-degr { background: #f2c200; color: #111; }
 .b-ok { background: #2e7d32; color: #fff; }
-.b-run { background: #1565c0; color: #fff; }
+.badge.b-result { min-width: 92px; box-sizing: border-box; text-align: center; position: relative; }
+.b-printing { background: var(--ok); color: #fff; padding-bottom: 6px; overflow: hidden; }
+.b-printing .prog { position: absolute; left: 4px; right: 4px; bottom: 2px; height: 3px;
+  background: rgba(0,0,0,.30); border-radius: 2px; }
+.b-printing .prog i { display: block; height: 100%; background: #fff; border-radius: 2px;
+  animation: prog-pulse 1.6s ease-in-out infinite; }
 .gico { vertical-align: middle; }
 a:hover .gico polyline { stroke: #d32f2f; }
 main { padding: 16px 20px 64px; max-width: 1200px; margin: 0 auto; }
@@ -682,7 +687,7 @@ def render_home(db):
                      + "\n".join(prows) + "</table>") if prows else \
         '<div class="empty">Żadna drukarka jeszcze nic nie zgłosiła.</div>'
 
-    body = f"""{offsite_backup_warning()}<h2>Aktywne awarie</h2>{failures_html}
+    body = f"""{offsite_backup_warning()}
     <div class="sec-head"><h2>Drukarki</h2>
       <div class="view-toggle">
         <button class="tab" data-view="map" onclick="setView('map')">Mapa</button>
@@ -691,6 +696,7 @@ def render_home(db):
     </div>
     <div id="view-map">{render_map(db)}</div>
     <div id="view-list">{printers_html}</div>
+    <h2>Aktywne awarie</h2>{failures_html}
     <script>
     function setView(v) {{
       localStorage.setItem('printer_view', v);
@@ -1332,18 +1338,21 @@ def render_stats(db, query):
           sec.checked = checked === boxes.length;
           sec.indeterminate = checked > 0 && checked < boxes.length;
         });
+        const all = [...document.querySelectorAll('.p-check')];
+        const on = all.filter(b => b.checked).length;
+        const master = document.getElementById('stmaster');
+        master.checked = all.length > 0 && on === all.length;
+        master.indeterminate = on > 0 && on < all.length;
       }
       document.querySelectorAll('.p-check').forEach(b => b.addEventListener('change', recalc));
       document.querySelectorAll('.sec-check').forEach(sec => sec.addEventListener('change', () => {
         sec.closest('.sec-group').querySelectorAll('.p-check').forEach(b => { b.checked = sec.checked; });
         recalc();
       }));
-      const setAllStats = on => {
-        document.querySelectorAll('.p-check').forEach(b => { b.checked = on; });
+      document.getElementById('stmaster').addEventListener('change', ev => {
+        document.querySelectorAll('.p-check').forEach(b => { b.checked = ev.target.checked; });
         recalc();
-      };
-      document.getElementById('stall').addEventListener('click', () => setAllStats(true));
-      document.getElementById('stnone').addEventListener('click', () => setAllStats(false));
+      });
       recalc();
     })();
     </script>"""
@@ -1368,10 +1377,8 @@ def render_stats(db, query):
     </div>
     {donut}
     <div class="sec-head"><h2>Drukarki</h2>
-      <div class="inline-form">
-        <button type="button" id="stall">Zaznacz wszystkie</button>
-        <button type="button" id="stnone">Wyczyść</button>
-      </div>
+      <label class="sec-pick"><input type="checkbox" id="stmaster" checked>
+        <b>wszystkie</b></label>
     </div>
     <div class="card">{bars_html}</div>
     <p class="muted">Druk = sesje z dziennika wydruków (telemetria, od fw 11240); awarie = czas
@@ -1461,25 +1468,32 @@ def known_printers(db):
     ]
 
 
-def result_badge(p):
-    """How the print ended (print_log.result, recorded forever). Inferred
-    verdicts ('?' suffix in the db) show the same label - the hover title
-    is the only place the provenance is mentioned."""
+def result_badge(p, progress=None):
+    """How the print ended (print_log.result, recorded forever). All result
+    badges share one width; a running print speaks the farm map's language:
+    green with the white progress sliver. Inferred verdicts ('?' suffix in
+    the db) show the same label - provenance lives in the hover title."""
     if not p["ended_at"]:
-        return '<span class="badge b-run">w trakcie</span>'
+        bar = ""
+        if progress is not None:
+            width = max(progress, 8)  # a sliver stays visible near 0%
+            bar = f'<span class="prog"><i style="width:{width:.0f}%"></i></span>'
+        pct = f" — {progress:.0f}%" if progress is not None else ""
+        return (f'<span class="badge b-result b-printing"'
+                f' title="Drukuje{pct}">drukuje{bar}</span>')
     result = p["result"] if "result" in p.keys() else None
     inferred = (' title="Wynik z porównania czasu wydruku z szacowanym'
                 ' czasem pliku (koniec nie został zarejestrowany na żywo)"')
     if result == "finished":
-        return '<span class="badge b-ok">ukończony</span>'
+        return '<span class="badge b-result b-ok">ukończony</span>'
     if result == "finished?":
-        return f'<span class="badge b-ok"{inferred}>ukończony</span>'
+        return f'<span class="badge b-result b-ok"{inferred}>ukończony</span>'
     if result == "aborted":
-        return '<span class="badge b-block">anulowany</span>'
+        return '<span class="badge b-result b-block">anulowany</span>'
     if result == "aborted?":
-        return f'<span class="badge b-block"{inferred}>anulowany</span>'
-    return ('<span class="badge b-degr" title="Koniec nie został zarejestrowany'
-            ' i brak szacowanego czasu do porównania">nieznany</span>')
+        return f'<span class="badge b-result b-block"{inferred}>anulowany</span>'
+    return ('<span class="badge b-result b-degr" title="Koniec nie został'
+            ' zarejestrowany i brak szacowanego czasu">nieznany</span>')
 
 
 def prints_window(query):
@@ -1573,12 +1587,17 @@ def render_prints_partial(db, query):
                  f'{graph_icon}</a>' if
                  (p["ended_ts"] or now) >= telemetry_floor else
                  '<span class="muted" title="Telemetria już wygasła">—</span>')
+        progress = None
+        if not p["ended_at"] and (live := live_of(p["hostname"])):
+            v = live[0].get("print_progress")
+            if isinstance(v, float):
+                progress = v
         trs.append(f"""<tr>
             <td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(p['hostname'])}">{e(p['hostname'])}</a></td>
             <td title="{e(p['file'])}"><b>{e(display_name(p['file']))}</b>{kind_badge(p)}</td>
             <td class="age">{e(p['started_at'])}</td>
             <td>{fmt_age(p['started_at'], p['ended_at'])}</td>
-            <td>{result_badge(p)}</td><td>{chart}</td></tr>""")
+            <td>{result_badge(p, progress)}</td><td>{chart}</td></tr>""")
     note = (f'<p class="muted">Pokazano pierwsze {PRINTS_LIMIT} wydruków — '
             'zawęź zakres albo wybór drukarek.</p>' if truncated else '')
     return (f'<p class="muted">{len(rows)} wydruków'
@@ -1661,8 +1680,6 @@ def render_history(db, query):
       <div class="inline-form" style="margin-top:10px">
         <label class="sec-pick"><input type="checkbox" id="selmaster">
           <b>wszystkie drukarki</b></label>
-        <button type="button" id="selall">Zaznacz wszystkie</button>
-        <button type="button" id="selnone">Wyczyść</button>
       </div>
     </div>
     <div id="plist">{render_prints_partial(db, query)}</div>
@@ -1748,8 +1765,6 @@ def render_history(db, query):
       document.getElementById('showall').addEventListener('change', refresh);
       document.getElementById('selmaster').addEventListener('change',
         ev => setAll(ev.target.checked));
-      document.getElementById('selall').addEventListener('click', () => setAll(true));
-      document.getElementById('selnone').addEventListener('click', () => setAll(false));
       syncSections();
     }})();
     </script>"""
@@ -1770,6 +1785,11 @@ def render_print_detail(db, pid):
     quoted = urllib.parse.quote(p["hostname"])
     material = (f' — materiał: <b>{e(p["material"])}</b>'
                 if p["material"] else '')
+    live_pct = None
+    if not p["ended_at"] and (live := live_of(p["hostname"])):
+        v = live[0].get("print_progress")
+        if isinstance(v, float):
+            live_pct = v
     gm = meta_of_print(gcode_meta_index(db), p["file"])
     gcode_info = ""
     if gm and gm["est_s"]:
@@ -1780,7 +1800,7 @@ def render_print_detail(db, pid):
         gcode_info = f'<p>Szacowany czas: <b>{fmt_dur(gm["est_s"])}</b>{pct}</p>'
     meta = f"""
     <p><a href="/awaria/history">&larr; Historia wydruków</a></p>
-    <h2>Wydruk: {e(display_name(p['file']))} {result_badge(p)}{kind_badge(p)}</h2>
+    <h2>Wydruk: {e(display_name(p['file']))} {result_badge(p, live_pct)}{kind_badge(p)}</h2>
     <div class="card">
       <p>Drukarka: <a class="host" href="/awaria/printer/{quoted}">{e(p['hostname'])}</a>{material}</p>
       <p class="muted">{e(p['file'])}</p>
