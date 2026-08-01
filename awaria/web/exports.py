@@ -53,10 +53,13 @@ RESULT_TEXT = {
 }
 
 
-# a workbook is built in memory, and the service runs under MemoryMax=200M:
-# beyond this many rows the export is refused with an explanation instead of
-# risking an OOM restart of the whole panel mid-shift
-EXPORT_MAX_ROWS = 20000
+# Rows stream from a cursor into a write-only workbook, so memory barely
+# tracks the row count: measured on the Pi, 100k rows cost +3.5 MB of RSS
+# and a 3 MB file (a real export runs ~60 B/row in the file). Memory is
+# therefore not the binding constraint - this cap exists to bound how long
+# the export holds the database lock, and 200k rows is roughly two years of
+# the whole farm.
+EXPORT_MAX_ROWS = 200000
 
 
 def export_prints_xlsx(db, query):
@@ -73,7 +76,7 @@ def export_prints_xlsx(db, query):
     # imported here: pages imports nothing from this module, so this stays a
     # one-way dependency
     from awaria.web.pages import (gcode_meta_index, meta_of_print,
-                                  prints_count, prints_rows)
+                                  prints_count, prints_iter)
 
     total = prints_count(db, query)
     if total > EXPORT_MAX_ROWS:
@@ -94,7 +97,7 @@ def export_prints_xlsx(db, query):
         cell.font = Font(bold=True)
         header.append(cell)
     ws.append(header)
-    for p in prints_rows(db, query):
+    for p in prints_iter(db, query):
         meta = meta_of_print(meta_idx, p["file"])
         hours = round(((p["ended_ts"] or now) - (p["started_ts"] or now)) /
                       3600, 2)
