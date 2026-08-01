@@ -200,12 +200,16 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .b-block { background: #d32f2f; color: #fff; }
 .b-degr { background: #f2c200; color: #111; }
 .b-ok { background: #2e7d32; color: #fff; }
-.badge.b-result { min-width: 92px; box-sizing: border-box; text-align: center; position: relative; }
-.b-printing { background: var(--ok); color: #fff; padding-bottom: 6px; overflow: hidden; }
-.b-printing .prog { position: absolute; left: 4px; right: 4px; bottom: 2px; height: 3px;
-  background: rgba(0,0,0,.30); border-radius: 2px; }
-.b-printing .prog i { display: block; height: 100%; background: #fff; border-radius: 2px;
+/* every verdict badge is the same pill; a running print is that pill filled
+   as a progress bar (no label - the bar says it), like the map squares */
+.badge.b-result { display: inline-flex; align-items: center; justify-content: center;
+  min-width: 92px; height: 20px; padding: 0 9px; box-sizing: border-box; }
+.b-printing { justify-content: flex-start; padding: 0; background: #cbdfcc; overflow: hidden; }
+.b-printing i { display: block; height: 100%; background: var(--ok);
   animation: prog-pulse 1.6s ease-in-out infinite; }
+.b-printing.indet i { width: 100%; animation: indet 1.1s linear infinite;
+  background: repeating-linear-gradient(115deg, var(--ok) 0 9px, #6fa273 9px 18px); }
+@keyframes indet { from { background-position: 0 0; } to { background-position: 38px 0; } }
 .gico { vertical-align: middle; }
 a:hover .gico polyline { stroke: #d32f2f; }
 main { padding: 16px 20px 64px; max-width: 1200px; margin: 0 auto; }
@@ -1474,13 +1478,12 @@ def result_badge(p, progress=None):
     green with the white progress sliver. Inferred verdicts ('?' suffix in
     the db) show the same label - provenance lives in the hover title."""
     if not p["ended_at"]:
-        bar = ""
-        if progress is not None:
-            width = max(progress, 8)  # a sliver stays visible near 0%
-            bar = f'<span class="prog"><i style="width:{width:.0f}%"></i></span>'
-        pct = f" — {progress:.0f}%" if progress is not None else ""
-        return (f'<span class="badge b-result b-printing"'
-                f' title="Drukuje{pct}">drukuje{bar}</span>')
+        if progress is None:  # printing, percent not (yet) in telemetry
+            return ('<span class="badge b-result b-printing indet"'
+                    ' title="Drukuje — brak danych o postępie"><i></i></span>')
+        width = max(progress, 6)  # a sliver stays visible near 0%
+        return (f'<span class="badge b-result b-printing" title="Drukuje'
+                f' — {progress:.0f}%"><i style="width:{width:.0f}%"></i></span>')
     result = p["result"] if "result" in p.keys() else None
     inferred = (' title="Wynik z porównania czasu wydruku z szacowanym'
                 ' czasem pliku (koniec nie został zarejestrowany na żywo)"')
