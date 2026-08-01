@@ -17,7 +17,17 @@ from awaria.services.catalog import SEVERITY_NAMES, LABEL_MAX_B, \
     QUESTION_MAX_B, ANSWER_MAX_B
 
 
-CSS = """
+CSS = """:root { --ink: #111; --muted: #666; --faint: #757575; --border: #e6e6e6; --surface: #fff;
+  --page: #f2f2f2; --accent: #1565c0; --ok: #2e7d32; --danger: #d32f2f; --warn: #f2c200;
+  --brand: #ffb700; --dark: #1a1a1a; }
+button, input[type=submit] { font: inherit; font-size: 14px; padding: 5px 12px; border: 1px solid #bbb;
+  border-radius: 4px; background: #fff; cursor: pointer; }
+button:hover { border-color: var(--accent); color: var(--accent); }
+input[type=submit] { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+input[type=submit]:hover { background: #0d4f9e; }
+select, input[type=text], input[type=date], input[type=number], input:not([type]) {
+  font: inherit; font-size: 14px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+
 body { font-family: system-ui, sans-serif; margin: 0; background: #f2f2f2; color: #111; }
 header { background: #1a1a1a; color: #fff; padding: 10px 20px; display: flex; align-items: center; gap: 16px;
   position: sticky; top: 0; z-index: 15; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
@@ -34,7 +44,7 @@ header a { color: #ffb700; text-decoration: none; }
 #drawer a:hover { background: #333; padding-left: 28px; }
 #drawer .brand { color: #ffb700; font-weight: 700; padding: 10px 20px 16px; border-bottom: 1px solid #333; margin-bottom: 6px; }
 #drawer .shutdown { position: absolute; bottom: 10px; left: 0; right: 0; border-top: 1px solid #333;
-  color: #999; font-size: 13.5px; }
+  color: #e57373; font-size: 13.5px; }
 #drawer .shutdown:hover { color: #fff; }
 #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 19;
   opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility .25s; }
@@ -68,14 +78,14 @@ input[type=submit]:hover { transform: translateY(-1px); }
 .sq .prog i { display: block; height: 100%; background: #fff; border-radius: 2px;
   animation: prog-pulse 1.6s ease-in-out infinite; }
 .selmap .selsq { cursor: pointer; background: #cfd8dc; color: #37474f; position: relative; }
-.selmap .selsq input { position: absolute; top: 1px; left: 1px; margin: 0; width: 12px; height: 12px; accent-color: #1565c0; }
+.selmap .selsq input { position: absolute; top: 1px; left: 1px; margin: 0; width: 14px; height: 14px; accent-color: #1565c0; }
 .selmap .selsq:has(input:checked) { background: #1565c0; color: #fff; }
 .selmap .selsq.empty { opacity: .18; cursor: default; }
 .selmap .selsq.wide { width: auto; min-width: 44px; padding: 0 8px 0 18px; }
 .sec-pick { cursor: pointer; }
 .sec-pick input { accent-color: #1565c0; }
 .sec-grid.extras { display: flex; flex-wrap: wrap; gap: 4px; }
-.zbtn { border: 1px solid #b0bec5; background: #fff; border-radius: 4px; width: 26px; height: 24px; cursor: pointer; font-weight: 700; }
+.zbtn { border: 1px solid #b0bec5; background: #fff; border-radius: 4px; width: 32px; height: 28px; cursor: pointer; font-weight: 700; }
 @keyframes prog-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 .map-legend { margin-top: 10px; color: #666; font-size: 13px; display: flex; align-items: center; gap: 6px; }
 .map-legend .sq.mini { width: 18px; height: 18px; display: inline-flex; margin-left: 14px; cursor: default; }
@@ -114,7 +124,7 @@ input[type=submit]:hover { transform: translateY(-1px); }
 .sec-group + .sec-group { margin-top: 20px; }
 .sec-toggle { display: flex; align-items: center; gap: 8px; padding: 0 10px 6px; margin-bottom: 4px;
   border-bottom: 1px solid #e6e6e6; cursor: pointer; font-size: 11.5px; text-transform: uppercase;
-  letter-spacing: .09em; color: #888; user-select: none; }
+  letter-spacing: .09em; color: #757575; user-select: none; }
 .sec-toggle b { font-size: 11.5px; font-weight: 700; color: #666; }
 .sec-toggle .muted { font-size: 11.5px; }
 .sec-toggle input[type=checkbox] { width: 14px; height: 14px; accent-color: #1a1a1a; }
@@ -141,7 +151,7 @@ table.plain td { padding: 4px 8px; }
 .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px; }
 label.check { display: block; padding: 3px 6px; border-radius: 4px; transition: background .15s ease; }
 label.check:hover { background: #f0f0f0; }
-td.drag { width: 26px; cursor: grab; color: #999; font-size: 18px; text-align: center; user-select: none; }
+td.drag { width: 26px; cursor: grab; color: #757575; font-size: 18px; text-align: center; user-select: none; }
 td.drag:active { cursor: grabbing; }
 tr.ghost td { background: #fff3cd; }
 tr.drag-active { box-shadow: 0 4px 14px rgba(0,0,0,.25); }
@@ -171,8 +181,8 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
   border-bottom-width: 0; pointer-events: none; }
 .notif a, .notif > span { flex: 1; padding: 8px 10px; text-decoration: none; color: #111; font-size: 13px; }
 .notif a:hover { background: #f6f6f6; }
-.notif small { display: block; color: #888; }
-.notif .nx { background: none; border: none; color: #999; font-size: 17px; cursor: pointer; padding: 8px 10px;
+.notif small { display: block; color: #757575; }
+.notif .nx { background: none; border: none; color: #757575; font-size: 17px; cursor: pointer; padding: 8px 10px;
   transition: color .15s ease; }
 .notif .nx:hover { color: #d32f2f; }
 .nk-failure { border-left-color: #d32f2f; }
@@ -180,7 +190,7 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .nk-overheat { border-left-color: #e65100; }
 .nk-gcode_update { border-left-color: #1565c0; }
 .nk-note { border-left-color: #f2c200; }
-.nempty { padding: 16px; color: #888; text-align: center; }
+.nempty { padding: 16px; color: #757575; text-align: center; }
 #notif-clear { display: none; width: 100%; border: none; background: #f2f2f2; padding: 9px; cursor: pointer;
   font-weight: 600; border-radius: 0 0 8px 8px; transition: background .15s ease; }
 #notif-clear:hover { background: #e4e4e4; }
@@ -193,17 +203,18 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .b-run { background: #1565c0; color: #fff; }
 .gico { vertical-align: middle; }
 a:hover .gico polyline { stroke: #d32f2f; }
-main { padding: 16px 20px 260px; max-width: 1200px; margin: 0 auto; }
-h2 { font-size: 16px; margin: 22px 0 8px; }
+main { padding: 16px 20px 64px; max-width: 1200px; margin: 0 auto; }
+main:has(.farm-map) { padding-bottom: 260px; }
+h2 { font-size: 18px; margin: 22px 0 8px; }
 table { border-collapse: collapse; width: 100%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); }
-th { text-align: left; font-size: 12px; text-transform: uppercase; color: #666; padding: 7px 10px; border-bottom: 2px solid #ddd; }
+th { position: sticky; top: 48px; z-index: 5; background: #fff; text-align: left; font-size: 12px; text-transform: uppercase; color: #666; padding: 7px 10px; border-bottom: 2px solid #ddd; }
 td { padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
 tr.blocked td { background: #fdecea; }
 tr.degraded td { background: #fdf7e0; }
 td.host, a.host { font-weight: 700; font-size: 17px; text-decoration: none; color: #111; }
 .detail { color: #555; white-space: pre-line; font-size: 13px; }
 .age { white-space: nowrap; }
-.muted { color: #888; font-size: 13px; }
+.muted { color: #757575; font-size: 13px; }
 form.note { display: flex; gap: 6px; margin-top: 4px; }
 form.note input[type=text] { flex: 1; padding: 4px 6px; }
 .empty { padding: 30px; text-align: center; color: #777; background: #fff; }
@@ -213,6 +224,7 @@ form.wizard { background: #fff; padding: 14px 18px; box-shadow: 0 1px 2px rgba(0
 form.wizard fieldset { margin: 12px 0; border: 1px solid #ccc; }
 form.wizard input, form.wizard select { padding: 3px 5px; }
 form.wizard table td { border: none; padding: 3px 6px; }
+#plist.loading { opacity: .45; transition: opacity .15s ease; }
 """
 
 
@@ -267,7 +279,8 @@ def page(title, body, refresh=None):
     }}
     setInterval(softRefresh, {int(refresh) * 1000});
     </script>""" if refresh else ""
-    return f"""<!doctype html><html><head><meta charset="utf-8">
+    return f"""<!doctype html><html lang="pl"><head><meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%231a1a1a'/><text x='8' y='12.5' font-size='11' font-weight='bold' text-anchor='middle' fill='%23ffb700' font-family='sans-serif'>G</text></svg>">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{e(title)}</title><style>{CSS}</style></head><body>
 <div id="overlay" onclick="drawer(false)"></div>
@@ -911,7 +924,7 @@ def render_failure(db, fid):
         (fid, )).fetchall()
     on_screen = f["category"] == SCREEN_NOTE_ERROR_ID and not f["closed_at"]
     comment_rows = "".join(f"""<li>{e(c['created_at'][:16])} — {e(c['text'])}
-        {'<span class="chip" style="background:#b37800;font-size:11px" title="Ten komentarz jest teraz wyświetlany na żółtym ekranie drukarki">na ekranie</span>' if on_screen and c['id'] == comments[-1]['id'] else ''}
+        {'<span class="chip" style="background:#b37800;color:#111;font-size:11px" title="Ten komentarz jest teraz wyświetlany na żółtym ekranie drukarki">na ekranie</span>' if on_screen and c['id'] == comments[-1]['id'] else ''}
         <form method="post" action="/awaria/failure/{fid}/comment_del" style="display:inline"
               onsubmit="return confirm('Usunąć komentarz?')">
           <input type="hidden" name="id" value="{c['id']}">
@@ -1043,15 +1056,17 @@ def render_failures_list(db, query):
     body = f"""<h2>Awarie — archiwum</h2>
     <div class="card">
       <form method="get" action="/awaria/failures" class="inline-form">
-        <select name="host">{host_opts}</select>
-        <select name="sec">{sec_opts}</select>
-        <select name="cat">{cat_opts}</select>
-        <select name="state">{state_opts}</select>
-        od <input type="date" name="from" value="{e(qget('from'))}">
-        do <input type="date" name="to" value="{e(qget('to'))}">
+        <select name="host" onchange="this.form.submit()">{host_opts}</select>
+        <select name="sec" onchange="this.form.submit()">{sec_opts}</select>
+        <select name="cat" onchange="this.form.submit()">{cat_opts}</select>
+        <select name="state" onchange="this.form.submit()">{state_opts}</select>
+        od <input type="date" name="from" value="{e(qget('from'))}"
+                  onchange="this.form.submit()">
+        do <input type="date" name="to" value="{e(qget('to'))}"
+                  onchange="this.form.submit()">
         <input name="q" size="18" maxlength="80" placeholder="szukany tekst"
                value="{e(qget('q'))}">
-        <input type="submit" value="Filtruj">
+        <input type="submit" value="Szukaj">
         <a href="/awaria/failures">wyczyść</a>
       </form>
       <p class="muted">Eksport wyników:
@@ -1323,6 +1338,12 @@ def render_stats(db, query):
         sec.closest('.sec-group').querySelectorAll('.p-check').forEach(b => { b.checked = sec.checked; });
         recalc();
       }));
+      const setAllStats = on => {
+        document.querySelectorAll('.p-check').forEach(b => { b.checked = on; });
+        recalc();
+      };
+      document.getElementById('stall').addEventListener('click', () => setAllStats(true));
+      document.getElementById('stnone').addEventListener('click', () => setAllStats(false));
       recalc();
     })();
     </script>"""
@@ -1346,7 +1367,12 @@ def render_stats(db, query):
       </form>
     </div>
     {donut}
-    <h2>Drukarki</h2>
+    <div class="sec-head"><h2>Drukarki</h2>
+      <div class="inline-form">
+        <button type="button" id="stall">Zaznacz wszystkie</button>
+        <button type="button" id="stnone">Wyczyść</button>
+      </div>
+    </div>
     <div class="card">{bars_html}</div>
     <p class="muted">Druk = sesje z dziennika wydruków (telemetria, od fw 11240); awarie = czas
     blokad z panelu; reszta okna = bezczynność. Najedź na pasek, aby zobaczyć godziny;
@@ -1458,9 +1484,9 @@ def result_badge(p):
 
 def prints_window(query):
     """(from_ts, to_ts, range_key, date_from, date_to) of the prints list."""
-    rng = (query.get("range") or ["7d"])[0]
+    rng = (query.get("range") or ["1d"])[0]
     if rng not in ("1d", "7d", "30d", "custom"):
-        rng = "7d"
+        rng = "1d"
     now = int(time.time())
     if rng == "custom":
         date_from = (query.get("dfrom") or [""])[0][:10]
@@ -1614,26 +1640,29 @@ def render_history(db, query):
             f'<div class="sec-grid extras">{boxes}</div></div>')
 
     ranges_html = "".join(
-        f'<label><input type="radio" name="rng" value="{v}"'
-        f'{" checked" if rng == v else ""}> {t}</label>'
+        f'<option value="{v}"{" selected" if rng == v else ""}>{t}</option>'
         for v, t in (("1d", "1 dzień"), ("7d", "1 tydzień"),
                      ("30d", "1 miesiąc"), ("custom", "zakres dat")))
 
     body = f"""
-    <h2>Historia wydruków</h2>
-    <div class="card">
-      <div class="farm-map selmap">{''.join(zones_html)}{extras_html}</div>
-      <p class="muted" style="margin:6px 0 10px">
-        <a href="#" id="selall">zaznacz wszystkie</a> ·
-        <a href="#" id="selnone">wyczyść</a></p>
-      <div class="inline-form" id="rangebar">
-        {ranges_html}
+    <div class="sec-head"><h2>Historia wydruków</h2>
+      <div class="inline-form">
         <span id="customdates" style="display:{'inline' if rng == 'custom' else 'none'}">
           od <input type="date" id="dfrom" value="{e(date_from)}">
           do <input type="date" id="dto" value="{e(date_to)}">
         </span>
+        <select id="rng" title="Zakres czasu">{ranges_html}</select>
         <label><input type="checkbox" id="showall"{' checked' if show_all else ''}>
-          pokaż też testy i serwisowe</label>
+          testy i serwisowe</label>
+      </div>
+    </div>
+    <div class="card">
+      <div class="farm-map selmap">{''.join(zones_html)}{extras_html}</div>
+      <div class="inline-form" style="margin-top:10px">
+        <label class="sec-pick"><input type="checkbox" id="selmaster">
+          <b>wszystkie drukarki</b></label>
+        <button type="button" id="selall">Zaznacz wszystkie</button>
+        <button type="button" id="selnone">Wyczyść</button>
       </div>
     </div>
     <div id="plist">{render_prints_partial(db, query)}</div>
@@ -1652,6 +1681,10 @@ def render_history(db, query):
           sb.checked = hosts.length > 0 && sel === hosts.length;
           sb.indeterminate = sel > 0 && sel < hosts.length;
         }});
+        const all = boxes(), sel = all.filter(b => b.checked).length;
+        const master = document.getElementById('selmaster');
+        master.checked = all.length > 0 && sel === all.length;
+        master.indeterminate = sel > 0 && sel < all.length;
       }}
 
       function qs() {{
@@ -1659,7 +1692,7 @@ def render_history(db, query):
         const sel = boxes().filter(b => b.checked).map(b => b.value);
         if (sel.length === 0) p.set('hosts', '-');
         else if (sel.length < boxes().length) p.set('hosts', sel.join(','));
-        const rng = document.querySelector('input[name=rng]:checked').value;
+        const rng = document.getElementById('rng').value;
         p.set('range', rng);
         if (rng === 'custom') {{
           const f = document.getElementById('dfrom').value,
@@ -1675,9 +1708,17 @@ def render_history(db, query):
       async function refresh() {{
         const q = qs(), my = ++seq;
         history.replaceState(null, '', '/awaria/history?' + q);
+        const plist = document.getElementById('plist');
+        plist.classList.add('loading');
         const r = await fetch('/awaria/partial/prints?' + q);
-        if (!r.ok || my !== seq) return;
-        document.getElementById('plist').innerHTML = await r.text();
+        if (my !== seq) return;
+        if (r.ok) plist.innerHTML = await r.text();
+        plist.classList.remove('loading');
+      }}
+
+      function setAll(on) {{
+        boxes().forEach(b => b.checked = on);
+        syncSections(); refresh();
       }}
 
       boxes().forEach(b =>
@@ -1690,25 +1731,25 @@ def render_history(db, query):
           }});
           syncSections(); refresh();
         }}));
-      document.querySelectorAll('input[name=rng]').forEach(r =>
-        r.addEventListener('change', () => {{
-          document.getElementById('customdates').style.display =
-            (r.value === 'custom' && r.checked) ? 'inline' : 'none';
-          refresh();
-        }}));
+      document.getElementById('rng').addEventListener('change', ev => {{
+        const custom = ev.target.value === 'custom';
+        document.getElementById('customdates').style.display = custom ? 'inline' : 'none';
+        if (custom) {{
+          // sensible prefill: last 7 days, editable before anything reloads
+          const day = d => d.toISOString().slice(0, 10);
+          const df = document.getElementById('dfrom'), dt = document.getElementById('dto');
+          if (!dt.value) {{ dt.value = day(new Date()); }}
+          if (!df.value) {{ df.value = day(new Date(Date.now() - 7 * 86400e3)); }}
+        }}
+        refresh();
+      }});
       ['dfrom', 'dto'].forEach(id =>
         document.getElementById(id).addEventListener('change', refresh));
       document.getElementById('showall').addEventListener('change', refresh);
-      document.getElementById('selall').addEventListener('click', ev => {{
-        ev.preventDefault();
-        boxes().forEach(b => b.checked = true);
-        syncSections(); refresh();
-      }});
-      document.getElementById('selnone').addEventListener('click', ev => {{
-        ev.preventDefault();
-        boxes().forEach(b => b.checked = false);
-        syncSections(); refresh();
-      }});
+      document.getElementById('selmaster').addEventListener('change',
+        ev => setAll(ev.target.checked));
+      document.getElementById('selall').addEventListener('click', () => setAll(true));
+      document.getElementById('selnone').addEventListener('click', () => setAll(false));
       syncSections();
     }})();
     </script>"""
@@ -1841,11 +1882,29 @@ def render_files(db):
              f"<th>Zużycie</th><th>Podkładka</th></tr>{''.join(trs)}</table>"
              if trs else
              '<div class="empty">Skaner jeszcze nie przeszedł biblioteki.</div>')
-    body = f"""<h2>Pliki g-code ({len(rows)})</h2>
+    body = f"""<div class="sec-head"><h2>Pliki g-code ({len(rows)})</h2>
+      <input id="fsearch" type="text" placeholder="filtruj: nazwa, filament, podkładka..."
+             style="min-width:300px" autofocus></div>
     <p class="muted">Metadane czytane wprost z plików na NAS (stopka slicera +
-    M9203 w starcie); odświeżane co 15 min. Wydruk krótszy o więcej niż 2% od
+    M9203 w starcie); odświeżane co 15 min. Wydruk krótszy o więcej niż 6% od
     szacowanego czasu jest oznaczany jako anulowany.</p>
-    {table}"""
+    {table}
+    <script>
+    (function() {{
+      const rows = [...document.querySelectorAll('table tr')].slice(1);
+      const h2 = document.querySelector('.sec-head h2'), total = {len(rows)};
+      document.getElementById('fsearch').addEventListener('input', ev => {{
+        const q = ev.target.value.trim().toLowerCase();
+        let shown = 0;
+        rows.forEach(r => {{
+          const hit = !q || r.textContent.toLowerCase().includes(q);
+          r.style.display = hit ? '' : 'none';
+          if (hit) {{ shown++; }}
+        }});
+        h2.textContent = 'Pliki g-code (' + (q ? shown + ' z ' + total : total) + ')';
+      }});
+    }})();
+    </script>"""
     return page("GRIZZLA — pliki g-code", ("", body))
 
 
