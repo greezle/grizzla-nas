@@ -10,11 +10,12 @@ import urllib.parse
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler
 
-from awaria.config import STATIC_DIR, FARM_HOST_RE
+from awaria.config import STATIC_DIR, FARM_HOST_RE, SFN_REPORT_MAX_BYTES
 from awaria.db import db_lock, net_log, open_db, now_str, now_pair, to_epoch_or_none
 from awaria.services import bus
 from awaria.services.catalog import render_catalog, save_def, reorder_defs
 from awaria.services.failures import handle_event, screen_note_for
+from awaria.services.sfn import handle_sfn_report, sfn_status
 from awaria.services.telemetry import (history_columns, live_progress,
                                        samples_columns)
 from awaria.web.exports import (export_failures_csv, export_failures_xlsx,
@@ -142,6 +143,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/awaria/api/progress.json":
                 # in-memory only; keeps the Historia bars moving
                 return self.send_json(200, live_progress())
+
+            if path == "/awaria/api/sfn-status":
+                # takes db_lock itself (services/sfn.py)
+                return self.send_json(200, sfn_status())
 
             # live-telemetry endpoints touch only in-memory state / their own
             # database - they neither need nor should wait for db_lock
@@ -294,8 +299,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urllib.parse.unquote(self.path.split("?")[0])
         length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(min(length, 64 * 1024))
+        # SFN reports are one line per g-code on the farm drive - far past
+        # the small-body cap that protects every other endpoint
+        cap = SFN_REPORT_MAX_BYTES if path == "/awaria/api/sfn-report" else 64 * 1024
+        body = self.rfile.read(min(length, cap))
         try:
+            if path == "/awaria/api/sfn-report":
+                code, resp = handle_sfn_report(
+                    self.headers.get("X-Printer"), body)
+                return self.send_json(code, resp)
+
             if path == "/awaria/api/event":
                 try:
                     data = json.loads(body.decode("utf-8", "replace"))

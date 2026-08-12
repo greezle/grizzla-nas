@@ -489,10 +489,32 @@ def migrate_9_filament_profile(db):
     db.execute("DELETE FROM gcode_meta")
 
 
+def migrate_10_sfn(db):
+    """Fleet SFN uniformity (services/sfn.py): QR stickers encode M23 <SFN
+    path>, so the printers' FAT tables must agree. sfn_reference is the
+    accepted table (source of the QR library); sfn_reports keeps each
+    printer's latest report and its verdict against the reference."""
+    db.execute("""CREATE TABLE IF NOT EXISTS sfn_reference (
+        lfn TEXT PRIMARY KEY,        -- path relative to the g-code root
+        sfn TEXT NOT NULL,           -- full /usb/... 8.3 path (QR payload)
+        release_seq INTEGER,         -- release that established the mapping
+        updated_at TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS sfn_reports (
+        hostname TEXT PRIMARY KEY,   -- latest report per printer
+        release_seq INTEGER,
+        release_date TEXT,
+        reported_at TEXT,
+        reported_ts INTEGER,
+        file_count INTEGER,
+        status TEXT,                 -- reference | match | mismatch | stale
+        diff TEXT)""")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
     migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments,
-    migrate_7_print_result, migrate_8_gcode_meta, migrate_9_filament_profile
+    migrate_7_print_result, migrate_8_gcode_meta, migrate_9_filament_profile,
+    migrate_10_sfn
 ]
 
 
