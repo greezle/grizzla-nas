@@ -88,6 +88,11 @@ input[type=submit]:hover { transform: translateY(-1px); }
 .zbtn { border: 1px solid #b0bec5; background: #fff; border-radius: 4px; width: 32px; height: 28px; cursor: pointer; font-weight: 700; }
 @keyframes prog-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 .map-legend { margin-top: 10px; color: #666; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.map-legend .grad { width: 150px; height: 12px; border-radius: 3px; border: 1px solid #e0e0e0;
+  background: linear-gradient(to right, #fbe9e7, #ffccbc, #ffab91, #ff8a65, #ff7043, #f4511e, #d84315, #bf360c); }
+.sec-tools { display: flex; align-items: center; gap: 8px; }
+.map-color-sel { border: 1px solid #ccc; border-radius: 6px; background: #fff;
+  padding: 5px 8px; font-size: 13px; color: #333; cursor: pointer; }
 .map-legend .sq.mini { width: 18px; height: 18px; display: inline-flex; margin-left: 14px; cursor: default; }
 .map-legend .sq.mini:first-child { margin-left: 0; }
 .map-legend .sq.mini:hover { transform: none; box-shadow: none; }
@@ -517,6 +522,8 @@ def render_map(db):
              ["J", "K"]]
 
     info = {}
+    cutoff90 = (datetime.now() -
+                timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
     for p in db.execute(
             "SELECT hostname FROM printers UNION SELECT DISTINCT hostname FROM events"
     ):
@@ -543,10 +550,20 @@ def render_map(db):
             online,
             "repair":
             f"{last['closed_at'][:10]} — {last['label'] or '?'}"
-            if last else None
+            if last else None,
+            # heatmap metric: failures opened in the last 3 months
+            "f90":
+            db.execute(
+                "SELECT COUNT(*) c FROM failures WHERE hostname=?"
+                " AND opened_at>?", (h, cutoff90)).fetchone()["c"],
         }
         if live := live_of(h):
             v = live[0]
+            # numeric copies for the heatmap coloring modes
+            for key, name in (("temp_noz", "noz"), ("temp_bed", "bed"),
+                              ("temp_brd", "brd"), ("temp_mcu", "mcu")):
+                if isinstance(v.get(key), float):
+                    info[h][name] = round(v[key], 1)
             if isinstance(v.get("print_filename"),
                           str) and v["print_filename"]:
                 progress = f" ({v['print_progress']:.0f}%)" if isinstance(
@@ -592,18 +609,28 @@ def render_map(db):
                 f'<div class="sec-grid">{cells}</div></div>')
         zone_html.append(f'<div class="zone">{"".join(sections)}</div>')
 
-    legend = """<div class="map-legend">
+    legend = """<div class="map-legend" id="legend-status">
       <span class="sq mini ok"></span> sprawna
       <span class="sq mini ok"><span class="prog"><i style="width:55%"></i></span></span> drukuje
       <span class="sq mini degraded"></span> uszkodzona
       <span class="sq mini" style="background:#d32f2f"></span> blokada
       <span class="sq mini off"></span> offline
+    </div>
+    <div class="map-legend" id="legend-heat" style="display:none">
+      <span id="heat-label"></span>
+      <span id="heat-min"></span>
+      <span class="grad"></span>
+      <span id="heat-max"></span>
+      <span class="sq mini" style="background:#eceff1"></span> brak danych
     </div>"""
 
+    # < keeps a literal '<' in the data from ever closing the <script>
+    # (hoisted out of the f-string: 3.11 forbids backslashes in expressions)
+    p_json = json.dumps(info, ensure_ascii=False).replace("<", "\\u003c")
     return f"""<div class="farm-map">{''.join(zone_html)}</div>{legend}<div id="tip"></div>
     <script>
     (function() {{
-      const P = {json.dumps(info, ensure_ascii=False).replace("<", "\\u003c")};
+      const P = {p_json};
       const tip = document.getElementById('tip');
       document.querySelectorAll('.sq').forEach(el => {{
         el.addEventListener('mouseenter', () => {{
@@ -616,6 +643,7 @@ def render_map(db):
                  + (p.open ? ' (' + p.open + ' otw.)' : '')
                  + (p.file ? '<br>Drukuje: ' + escText(p.file) : '')
                  + (p.temps ? '<br>' + p.temps : '')
+                 + (typeof p.f90 === 'number' ? '<br>Awarie (3 mies.): ' + p.f90 : '')
                  + '<br>Ostatnia naprawa: ' + escText(p.repair || 'brak');
           }}
           tip.innerHTML = text;
@@ -626,6 +654,55 @@ def render_map(db):
         }});
         el.addEventListener('mouseleave', () => tip.classList.remove('show'));
       }});
+
+      // ---- heatmap coloring (dropdown next to the map/list toggle) ----
+      // Sequential single-hue ramp, light -> dark: lightness carries the
+      // value, so the scale stays readable for color-blind viewers too.
+      const RAMP = ['#fbe9e7','#ffccbc','#ffab91','#ff8a65','#ff7043','#f4511e','#d84315','#bf360c'];
+      const MODES = {{
+        noz: {{ key: 'noz', label: 'temp. dyszy',  unit: '\\u00b0C' }},
+        bed: {{ key: 'bed', label: 'temp. sto\\u0142u', unit: '\\u00b0C' }},
+        brd: {{ key: 'brd', label: 'temp. xBuddy', unit: '\\u00b0C' }},
+        mcu: {{ key: 'mcu', label: 'temp. MCU',    unit: '\\u00b0C' }},
+        f90: {{ key: 'f90', label: 'awarie (3 mies.)', unit: '' }},
+      }};
+      const fmt = v => (Math.round(v * 10) / 10) + '';
+      window.setMapColor = function(mode) {{
+        localStorage.setItem('map_color', mode);
+        const sel = document.getElementById('map-color');
+        if (sel) sel.value = mode;
+        const ls = document.getElementById('legend-status');
+        const lh = document.getElementById('legend-heat');
+        const sqs = document.querySelectorAll('.farm-map .sq');
+        const m = MODES[mode];
+        if (!m) {{ // 'status' - back to the CSS state classes
+          sqs.forEach(el => {{ el.style.background = ''; el.style.color = ''; }});
+          ls.style.display = ''; lh.style.display = 'none';
+          return;
+        }}
+        const vals = [];
+        sqs.forEach(el => {{
+          const p = P[el.dataset.host];
+          if (p && typeof p[m.key] === 'number') vals.push(p[m.key]);
+        }});
+        const min = Math.min(...vals), max = Math.max(...vals);
+        sqs.forEach(el => {{
+          const p = P[el.dataset.host];
+          if (!p || typeof p[m.key] !== 'number') {{
+            el.style.background = '#eceff1'; el.style.color = '#b0bec5';
+            return;
+          }}
+          const t = max > min ? (p[m.key] - min) / (max - min) : 0.5;
+          const i = Math.round(t * (RAMP.length - 1));
+          el.style.background = RAMP[i];
+          el.style.color = i >= 6 ? '#fff' : '#3e2723';
+        }});
+        ls.style.display = 'none'; lh.style.display = 'flex';
+        document.getElementById('heat-label').textContent = 'Skala: ' + m.label;
+        document.getElementById('heat-min').textContent = vals.length ? fmt(min) + m.unit : '\\u2014';
+        document.getElementById('heat-max').textContent = vals.length ? fmt(max) + m.unit : '\\u2014';
+      }};
+      setMapColor(localStorage.getItem('map_color') || 'status');
     }})();
     </script>"""
 
@@ -717,9 +794,20 @@ def render_home(db):
 
     body = f"""{offsite_backup_warning()}
     <div class="sec-head"><h2>Drukarki</h2>
-      <div class="view-toggle">
-        <button class="tab" data-view="map" onclick="setView('map')">Mapa</button>
-        <button class="tab" data-view="list" onclick="setView('list')">Lista</button>
+      <div class="sec-tools">
+        <select id="map-color" class="map-color-sel" onchange="setMapColor(this.value)"
+                title="Kolorowanie mapy">
+          <option value="status">Kolor: status</option>
+          <option value="noz">Kolor: temp. dyszy</option>
+          <option value="bed">Kolor: temp. sto&#322;u</option>
+          <option value="brd">Kolor: temp. xBuddy</option>
+          <option value="mcu">Kolor: temp. MCU</option>
+          <option value="f90">Kolor: awarie (3 mies.)</option>
+        </select>
+        <div class="view-toggle">
+          <button class="tab" data-view="map" onclick="setView('map')">Mapa</button>
+          <button class="tab" data-view="list" onclick="setView('list')">Lista</button>
+        </div>
       </div>
     </div>
     <div id="view-map">{render_map(db)}</div>
@@ -730,6 +818,7 @@ def render_home(db):
       localStorage.setItem('printer_view', v);
       document.getElementById('view-map').classList.toggle('hidden', v !== 'map');
       document.getElementById('view-list').classList.toggle('hidden', v !== 'list');
+      document.getElementById('map-color').classList.toggle('hidden', v !== 'map');
       document.querySelectorAll('.view-toggle .tab').forEach(t =>
         t.classList.toggle('active', t.dataset.view === v));
     }}
@@ -871,12 +960,13 @@ def render_printer(db, host):
         if events else '<div class="empty">Brak zdarzeń.</div>')
     # background refresh of just the telemetry card + chart (a full-page swap
     # would wipe half-filled forms on this page)
+    host_json = json.dumps(host).replace("<", "\\u003c")
     chart_js = f"""
     <link rel="stylesheet" href="/awaria/static/uPlot.min.css">
     <script src="/awaria/static/uPlot.iife.min.js"></script>
     <script>
     (function() {{
-      const host = encodeURIComponent({json.dumps(host).replace("<", "\\u003c")});
+      const host = encodeURIComponent({host_json});
       let chart = null;
       async function tick() {{
         try {{
