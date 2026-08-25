@@ -300,6 +300,14 @@ def page(title, body, refresh=None):
         const r = await fetch(location.pathname + location.search);
         if (!r.ok) return;
         const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+        // a deploy may change the CSS in <head>, which a main-only swap would
+        // never pick up (stale-style tabs after every deploy) - full reload then
+        const freshStyle = doc.querySelector('head style');
+        const curStyle = document.querySelector('head style');
+        if (freshStyle && curStyle && freshStyle.textContent !== curStyle.textContent) {{
+          location.reload();
+          return;
+        }}
         const fresh = doc.querySelector('main');
         const old = document.querySelector('main');
         if (fresh && old) {{
