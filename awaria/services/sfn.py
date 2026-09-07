@@ -100,9 +100,16 @@ def manifest_seqs():
     return seqs
 
 
-def _qr_png_path(lfn):
+def qr_rel_path(lfn):
+    """QR PNG for a g-code, relative to QR_DIR - also the URL suffix under
+    /gcode/QR/ (nginx aliases /gcode/ to /srv/gcode/) and the path inside
+    the SMB share."""
     stem = lfn.rsplit(".", 1)[0] if "." in lfn.rsplit("/", 1)[-1] else lfn
-    return os.path.join(config.QR_DIR, stem + ".png")
+    return stem + ".png"
+
+
+def _qr_png_path(lfn):
+    return os.path.join(config.QR_DIR, qr_rel_path(lfn))
 
 
 def _regen_qr(pairs):
@@ -252,6 +259,18 @@ def handle_sfn_report(hostname, body):
             _record_report(db, hostname, seq, date, len(table), "stale", "")
         db.commit()
     return 200, {"ok": True}
+
+
+def reference_rows(db):
+    """The accepted SFN table for the browser/export: (lfn, sfn) sorted by
+    path, plus which printer/release established it. Takes the caller's `db`
+    - db_lock is NOT reentrant and page renders already hold it."""
+    return {
+        "release": int(_meta_get(db, "sfn_ref_release", 0) or 0),
+        "host": _meta_get(db, "sfn_ref_host"),
+        "rows": [(r["lfn"], r["sfn"]) for r in db.execute(
+            "SELECT lfn, sfn FROM sfn_reference ORDER BY lfn")],
+    }
 
 
 def sfn_status():

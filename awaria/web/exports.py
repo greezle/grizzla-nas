@@ -6,6 +6,7 @@ import io
 import time
 
 from awaria.services.failures import failures_select
+from awaria.services.sfn import reference_rows
 
 HEADER = [
     "ID", "Drukarka", "Kategoria", "Blokada", "Otwarta", "Naprawiona",
@@ -37,7 +38,7 @@ def export_failures_csv(db, query):
     for row in _rows(db, query):
         row[6] = str(row[6]).replace(".", ",")
         writer.writerow(row)
-    return "﻿" + out.getvalue()
+    return "\ufeff" + out.getvalue()
 
 
 PRINTS_HEADER = [
@@ -138,3 +139,19 @@ def export_failures_xlsx(db, query):
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+SFN_HEADER = ["Plik", "SFN", "Zawartość kodu QR"]
+
+
+def export_sfn_csv(db):
+    """The fleet's accepted SFN table: long path, the 8.3 short path the
+    printer resolves, and the exact string encoded in the QR sticker.
+    Same dialect as the failure export (semicolon + BOM) so Polish Excel
+    opens it on a double-click."""
+    out = io.StringIO()
+    writer = csv.writer(out, delimiter=";", lineterminator="\r\n")
+    writer.writerow(SFN_HEADER)
+    for lfn, sfn in reference_rows(db)["rows"]:
+        writer.writerow([lfn, sfn, "M23 " + sfn])
+    return "\ufeff" + out.getvalue()

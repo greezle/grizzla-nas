@@ -9,6 +9,7 @@ ssh `admin`), so the whole NAS can be rebuilt from this folder.
 |---|---|---|
 | `awaria/` → `build-server.sh` → `build/awaria-server` | `/usr/local/bin/awaria-server` | Failure dashboard + error catalog + telemetry collector + notifications + SSE + fleet SFN check/QR library (stdlib Python; deployed as a single-file zipapp — the QR generator alone needs `sudo apt install python3-qrcode`, everything else runs without it) |
 | `gcode-publish` | `/usr/local/bin/gcode-publish` | G-code release publisher (v4, differential backups) |
+| `awaria/services/sfn.py` (in the zipapp) | — | Fleet SFN check + QR sticker library: renders `/srv/gcode/QR/**.png` (payload `M23 <SFN>`), browsable in the dashboard under Pliki g-code -> SFN / QR and exportable as CSV. Needs `python3-qrcode`. |
 | `static/*` | `/var/lib/awaria/static/` | Vendored JS (SortableJS drag lists, uPlot charts) — no internet at runtime |
 | `deploy/awaria.service` | `/etc/systemd/system/` | Dashboard service (`Restart=always`, `MemoryMax=200M`) |
 | `deploy/awaria-backup`, `.service`, `.timer` | `/usr/local/bin/`, `/etc/systemd/system/` | Daily 03:30 backup of `awaria.db` to `/srv/gcode/awaria_backups/` (keeps 30) |
@@ -64,6 +65,10 @@ sudo htpasswd -c /etc/nginx/.htpasswd admin        # password: prusa
 sudo systemctl daemon-reload
 sudo systemctl enable --now awaria awaria-backup.timer gcode-publish.path nginx smbd
 ```
+
+Samba shares (`/etc/samba/smb.conf`): `[gcode]` -> `/srv/gcode/master` (read-write,
+the library the engineers publish from) and `[qr]` -> `/srv/gcode/QR` (read-only,
+the generated QR sticker library the print-order macros link). Both `valid users = admin`.
 
 ## Update just the dashboard
 

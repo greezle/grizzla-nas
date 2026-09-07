@@ -19,7 +19,7 @@ from awaria.services.sfn import handle_sfn_report, sfn_status
 from awaria.services.telemetry import (history_columns, live_progress,
                                        samples_columns)
 from awaria.web.exports import (export_failures_csv, export_failures_xlsx,
-                                export_prints_xlsx)
+                                export_prints_xlsx, export_sfn_csv)
 from awaria.web.pages import (page, render_home, render_printer,
                               render_failure, render_failures_list,
                               render_export_too_big, render_files,
@@ -275,6 +275,9 @@ class Handler(BaseHTTPRequestHandler):
                 return 413, render_export_too_big(data), self.HTML
             return (200, data, "application/vnd.openxmlformats-officedocument"
                     ".spreadsheetml.sheet", "wydruki.xlsx")
+        if path == "/awaria/sfn.csv":
+            return (200, export_sfn_csv(db),
+                    "text/csv; charset=utf-8", "sfn.csv")
         if path == "/awaria/files":
             return 200, render_files(db), self.HTML
         m = re.fullmatch(r"/awaria/print/(\d+)", path)

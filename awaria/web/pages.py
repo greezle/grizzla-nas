@@ -11,6 +11,7 @@ from awaria.config import (OFFSITE_STAMP, OFFSITE_MAX_AGE_S,
 from awaria.db import (db_lock, open_db, now_str, to_epoch,
                        to_epoch_or_none)
 from awaria.services.printers import is_online
+from awaria.services import sfn as sfn_service
 from awaria.services.telemetry import (FINE_EVERY_S, FINE_KEEP_S, live_of,
                                        is_overheated, HISTORY, live_lock)
 from awaria.services.catalog import SEVERITY_NAMES, LABEL_MAX_B, \
@@ -52,7 +53,10 @@ header a { color: #ffb700; text-decoration: none; }
 main { animation: page-in .28s ease; }
 main.no-anim { animation: none; }
 @keyframes page-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-.hidden { display: none; }
+/* !important: .hidden is a utility and must beat later same-specificity
+   display rules (.inline-form { display: flex } used to win over it) */
+.hidden { display: none !important; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
 .sec-head { display: flex; justify-content: space-between; align-items: center; margin-top: 22px; }
 .sec-head h2 { margin: 0; }
 .view-toggle { display: flex; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
@@ -2223,10 +2227,83 @@ def render_export_too_big(count):
     return page("GRIZZLA — eksport za duży", ("", body))
 
 
+FILES_TAB_JS = """
+    function setFilesView(v) {
+      localStorage.setItem('files_view', v);
+      document.getElementById('view-meta').classList.toggle('hidden', v !== 'meta');
+      document.getElementById('view-sfn').classList.toggle('hidden', v !== 'sfn');
+      document.getElementById('meta-filters').classList.toggle('hidden', v !== 'meta');
+      document.getElementById('sfn-filters').classList.toggle('hidden', v !== 'sfn');
+      document.querySelectorAll('.view-toggle .tab').forEach(t =>
+        t.classList.toggle('active', t.dataset.view === v));
+      applyFiles();
+    }
+    (function() {
+      const metaRows = [...document.querySelectorAll('#tbl-meta tr')].slice(1);
+      const sfnRows = [...document.querySelectorAll('#tbl-sfn tr')].slice(1);
+      const h2 = document.getElementById('files-h2');
+      const totalMeta = META_TOTAL, totalSfn = SFN_TOTAL;
+      const search = document.getElementById('fsearch'),
+            mat = document.getElementById('fmat'),
+            sheet = document.getElementById('fsheet'),
+            sfnSearch = document.getElementById('sfnsearch');
+
+      window.applyFiles = function() {
+        if ((localStorage.getItem('files_view') || 'meta') === 'sfn') {
+          const q = sfnSearch.value.trim().toLowerCase();
+          let shown = 0;
+          sfnRows.forEach(r => {
+            const hit = !q || r.textContent.toLowerCase().includes(q);
+            r.style.display = hit ? '' : 'none';
+            if (hit) { shown++; }
+          });
+          h2.textContent = 'Pliki g-code — SFN (' + (q ? shown + ' z ' + totalSfn : totalSfn) + ')';
+          return;
+        }
+        const q = search.value.trim().toLowerCase();
+        const m = mat.value, s = sheet.value;
+        let shown = 0;
+        metaRows.forEach(r => {
+          const cells = r.children;
+          const hit = (!q || cells[0].textContent.toLowerCase().includes(q))
+            && (!m || cells[2].textContent.trim() === m)
+            && (!s || cells[4].textContent.trim() === s);
+          r.style.display = hit ? '' : 'none';
+          if (hit) { shown++; }
+        });
+        const filtered = q || m || s;
+        h2.textContent = 'Pliki g-code (' + (filtered ? shown + ' z ' + totalMeta : totalMeta) + ')';
+      };
+
+      // these filters only hide rows already in the page - the server never
+      // sees them, so they stay in localStorage (cookies are for state the
+      // server renders, and would ride along on every request for nothing)
+      [search, mat, sheet].forEach(el => el.addEventListener('input', () => {
+        applyFiles();
+        try {
+          localStorage.setItem('files_filters', JSON.stringify(
+            {q: search.value, m: mat.value, s: sheet.value}));
+        } catch (err) {}
+      }));
+      sfnSearch.addEventListener('input', applyFiles);
+
+      try {
+        const saved = JSON.parse(localStorage.getItem('files_filters') || 'null');
+        if (saved) {
+          search.value = saved.q || '';
+          mat.value = saved.m || '';
+          sheet.value = saved.s || '';
+        }
+      } catch (err) {}
+      setFilesView(localStorage.getItem('files_view') || 'meta');
+    })();
+"""
+
+
 def render_files(db):
-    """The g-code library's scanned metadata: slicer estimate, filament,
-    weight and target sheet per file - the reference table behind the
-    2%-short cancelled rule."""
+    """The g-code library's scanned metadata (slicer estimate, filament,
+    weight, target sheet) plus a second tab with the fleet's SFN table -
+    the exact payloads encoded in the printed QR stickers."""
     rows = db.execute("SELECT * FROM gcode_meta ORDER BY path").fetchall()
     trs = []
     for r in rows:
@@ -2237,9 +2314,9 @@ def render_files(db):
                    f'<td title="{e(profile or "")}">{e(r["filament"] or "—")}</td>'
                    f"<td>{grams}</td>"
                    f"<td>{e(r['sheet'] or '—')}</td></tr>")
-    table = ("<table><tr><th>Plik</th><th>Szac. czas</th><th>Filament</th>"
-             f"<th>Zużycie</th><th>Podkładka</th></tr>{''.join(trs)}</table>"
-             if trs else
+    table = ('<table id="tbl-meta"><tr><th>Plik</th><th>Szac. czas</th>'
+             "<th>Filament</th><th>Zużycie</th><th>Podkładka</th></tr>"
+             f"{''.join(trs)}</table>" if trs else
              '<div class="empty">Skaner jeszcze nie przeszedł biblioteki.</div>')
     materials = sorted({r["filament"] for r in rows if r["filament"]})
     mat_opts = '<option value="">— filament —</option>' + "".join(
@@ -2247,64 +2324,62 @@ def render_files(db):
     sheets = sorted({r["sheet"] for r in rows if r["sheet"]})
     sheet_opts = '<option value="">— podkładka —</option>' + "".join(
         f"<option>{e(s)}</option>" for s in sheets)
-    body = f"""<div class="sec-head"><h2>Pliki g-code ({len(rows)})</h2>
-      <div class="inline-form">
-        <select id="fmat">{mat_opts}</select>
-        <select id="fsheet">{sheet_opts}</select>
-        <input id="fsearch" type="text" placeholder="szukaj w nazwie pliku..."
-               style="min-width:240px" autofocus>
-      </div></div>
-    <p class="muted">Metadane czytane wprost z plików na NAS (stopka slicera +
-    M9203 w starcie); odświeżane co 15 min. Filament sprowadzony do wspólnego
-    nazewnictwa (30D, 95A, Matt 95A, PLA, PETG...) — pełny profil slicera
-    pokazuje się po najechaniu. Wydruk krótszy o więcej niż 6% od szacowanego
-    czasu jest oznaczany jako anulowany.</p>
-    {table}
-    <script>
-    (function() {{
-      const rows = [...document.querySelectorAll('table tr')].slice(1);
-      const h2 = document.querySelector('.sec-head h2'), total = {len(rows)};
-      const search = document.getElementById('fsearch'),
-            mat = document.getElementById('fmat'),
-            sheet = document.getElementById('fsheet');
-      function apply() {{
-        const q = search.value.trim().toLowerCase();
-        const m = mat.value, s = sheet.value;
-        let shown = 0;
-        rows.forEach(r => {{
-          const cells = r.children;
-          const hit = (!q || cells[0].textContent.toLowerCase().includes(q))
-            && (!m || cells[2].textContent.trim() === m)
-            && (!s || cells[4].textContent.trim() === s);
-          r.style.display = hit ? '' : 'none';
-          if (hit) {{ shown++; }}
-        }});
-        const filtered = q || m || s;
-        h2.textContent = 'Pliki g-code (' + (filtered ? shown + ' z ' + total : total) + ')';
-      }}
-      // this filter only hides rows already in the page - the server never
-      // sees it, so it stays in localStorage (cookies are for state the
-      // server renders, and would ride along on every request for nothing)
-      [search, mat, sheet].forEach(el => el.addEventListener('input', () => {{
-        apply();
-        try {{
-          localStorage.setItem('files_filters', JSON.stringify(
-            {{q: search.value, m: mat.value, s: sheet.value}}));
-        }} catch (err) {{}}
-      }}));
-      try {{
-        const saved = JSON.parse(localStorage.getItem('files_filters') || 'null');
-        if (saved) {{
-          search.value = saved.q || '';
-          mat.value = saved.m || '';
-          sheet.value = saved.s || '';
-          apply();
-        }}
-      }} catch (err) {{}}
-    }})();
-    </script>"""
-    return page("GRIZZLA — pliki g-code", ("", body))
 
+    # SFN tab: what each printer actually resolves, and the sticker payload.
+    # The PNGs are already served by nginx (location /gcode/ -> /srv/gcode/).
+    ref = sfn_service.reference_rows(db)
+    sfn_trs = []
+    for lfn, sfn in ref["rows"]:
+        qr_url = "/gcode/QR/" + urllib.parse.quote(sfn_service.qr_rel_path(lfn))
+        sfn_trs.append(f"<tr><td>{e(lfn)}</td><td class='mono'>{e(sfn)}</td>"
+                       f'<td><a href="{e(qr_url)}" target="_blank">PNG</a></td></tr>')
+    if sfn_trs:
+        sfn_body = ('<table id="tbl-sfn"><tr><th>Plik</th>'
+                    "<th>SFN — treść naklejki: M23 + ta ścieżka</th>"
+                    f"<th>Kod QR</th></tr>{''.join(sfn_trs)}</table>")
+        sfn_note = (
+            f'<p class="muted">Referencja: release <b>{ref["release"]}</b> z drukarki '
+            f'<b>{e(ref["host"] or "?")}</b> — pierwszej, która zgłosiła to wydanie; '
+            "pozostałe drukarki są do niej porównywane, a różnice trafiają na dzwonek. "
+            "Naklejka koduje dokładnie <code>M23 &lt;SFN&gt;</code>. Pliki PNG leżą na "
+            "NAS w <code>/srv/gcode/QR</code> (udział SMB <code>qr</code>) i mają tę samą "
+            "strukturę katalogów co biblioteka.</p>")
+    else:
+        sfn_body = ('<div class="empty">Żadna drukarka jeszcze nie zgłosiła tabeli SFN '
+                    "(wymaga firmware ze zgłaszaniem SFN i jednej aktualizacji g-code).</div>")
+        sfn_note = ""
+
+    js = FILES_TAB_JS.replace("META_TOTAL", str(len(rows))).replace(
+        "SFN_TOTAL", str(len(sfn_trs)))
+    body = f"""<div class="sec-head"><h2 id="files-h2">Pliki g-code ({len(rows)})</h2>
+      <div class="sec-tools">
+        <div class="inline-form" id="meta-filters">
+          <select id="fmat">{mat_opts}</select>
+          <select id="fsheet">{sheet_opts}</select>
+          <input id="fsearch" type="text" placeholder="szukaj w nazwie pliku..."
+                 style="min-width:240px" autofocus>
+        </div>
+        <div class="inline-form hidden" id="sfn-filters">
+          <input id="sfnsearch" type="text" placeholder="szukaj pliku lub SFN..."
+                 style="min-width:240px">
+          <a class="btn-link" href="/awaria/sfn.csv">Eksport CSV</a>
+        </div>
+        <div class="view-toggle">
+          <button class="tab" data-view="meta" onclick="setFilesView('meta')">Metadane</button>
+          <button class="tab" data-view="sfn" onclick="setFilesView('sfn')">SFN / QR</button>
+        </div>
+      </div></div>
+    <div id="view-meta">
+      <p class="muted">Metadane czytane wprost z plików na NAS (stopka slicera +
+      M9203 w starcie); odświeżane co 15 min. Filament sprowadzony do wspólnego
+      nazewnictwa (30D, 95A, Matt 95A, PLA, PETG...) — pełny profil slicera
+      pokazuje się po najechaniu. Wydruk krótszy o więcej niż 6% od szacowanego
+      czasu jest oznaczany jako anulowany.</p>
+      {table}
+    </div>
+    <div id="view-sfn">{sfn_note}{sfn_body}</div>
+    <script>{js}</script>"""
+    return page("GRIZZLA — pliki g-code", ("", body))
 
 def render_defs_list(db):
     seq = db.execute(
