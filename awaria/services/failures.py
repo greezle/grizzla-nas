@@ -51,10 +51,33 @@ def handle_event(data, client_ip=None):
             " last_ip=COALESCE(?, last_ip) WHERE hostname=?",
             (now, now_ts, client_ip, host))
         if seq is not None:
-            dup = db.execute("SELECT 1 FROM events WHERE hostname=? AND seq=?",
-                             (host, seq)).fetchone()
+            dup = db.execute(
+                "SELECT action, category, printer_time, detail FROM events"
+                " WHERE hostname=? AND seq=?", (host, seq)).fetchone()
             if dup:
-                return 200, {"ok": True, "dup": True}
+                same = (dup["action"] == action and dup["category"] == category
+                        and (dup["printer_time"] or None) == ptime
+                        and (dup["detail"] or "") == detail)
+                if same:
+                    return 200, {"ok": True, "dup": True}
+                # Same seq but a DIFFERENT event: the printer's counter
+                # restarted (config reset / reflash), not a retransmission.
+                # Treating it as a duplicate silently discarded real events -
+                # a NAPRAWIONO lost this way leaves the printer BLOKADA on
+                # the dashboard while its own screen is clear. Accept it
+                # (stored without seq so the unique index does not reject it)
+                # and flag the restart once per printer.
+                already = db.execute(
+                    "SELECT 1 FROM notifications WHERE hostname=? AND dismissed=0"
+                    " AND text LIKE '%licznik zdarze%'", (host, )).fetchone()
+                if not already:
+                    notify(db, "failure",
+                           f"{host}: licznik zdarzeń drukarki zaczął od nowa"
+                           f" (seq {seq} nadszedł ponownie z inną treścią) -"
+                           " zdarzenia są przyjmowane, sprawdź czy stan"
+                           " drukarki zgadza się z panelem", host,
+                           f"/awaria/printer/{urllib.parse.quote(host)}")
+                seq = None
 
         # the print session this report belongs to (running now, or just over)
         session_id = session_at(db, host, now_ts)
