@@ -224,6 +224,7 @@ def handle_metrics_packet(data, addr):
         stamp_late_result(host, ps)
     if isinstance(values.get("gcode_release"), str):
         track_gcode_release(host, values["gcode_release"])
+    persist_versions(host, values.get("fw_version"), values.get("gcode_release"))
     check_overheat(host, values)
 
 
@@ -418,6 +419,32 @@ def track_gcode_release(host, release):
         notify(db, "gcode_update",
                f"{host}: zaktualizowano g-code do {release}", host,
                f"/awaria/printer/{urllib.parse.quote(host)}")
+        db.commit()
+
+
+# (fw_version, gcode_release) last written to printers.* per host - packets
+# arrive ~1/s per printer, the row is touched only when something changed
+STORED_VERSIONS = {}
+
+
+def persist_versions(host, fw, release):
+    """Keeps printers.fw_version / gcode_release current so the fleet list
+    can show and compare versions of printers that are not streaming right
+    now. One UPDATE per actual change, not per packet."""
+    fw = fw if isinstance(fw, str) and fw else None
+    release = release if isinstance(release, str) and release else None
+    if fw is None and release is None:
+        return
+    if STORED_VERSIONS.get(host) == (fw, release):
+        return
+    STORED_VERSIONS[host] = (fw, release)
+    with db_lock, open_db() as db:
+        db.execute("INSERT OR IGNORE INTO printers(hostname) VALUES (?)",
+                   (host, ))
+        db.execute(
+            "UPDATE printers SET fw_version=COALESCE(?, fw_version),"
+            " gcode_release=COALESCE(?, gcode_release) WHERE hostname=?",
+            (fw, release, host))
         db.commit()
 
 

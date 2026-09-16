@@ -510,11 +510,20 @@ def migrate_10_sfn(db):
         diff TEXT)""")
 
 
+def migrate_11_printer_versions(db):
+    """Last firmware build and g-code release each printer reported over
+    telemetry. Kept on the printers row so the fleet list can compare
+    versions even for printers that are offline right now (live telemetry
+    alone showed a dash for anything not streaming at that moment)."""
+    add_column(db, "printers", "fw_version TEXT")
+    add_column(db, "printers", "gcode_release TEXT")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
     migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments,
     migrate_7_print_result, migrate_8_gcode_meta, migrate_9_filament_profile,
-    migrate_10_sfn
+    migrate_10_sfn, migrate_11_printer_versions
 ]
 
 

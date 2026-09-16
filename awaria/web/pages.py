@@ -57,6 +57,8 @@ main.no-anim { animation: none; }
    display rules (.inline-form { display: flex } used to win over it) */
 .hidden { display: none !important; }
 .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.fw-odd { background: #fff3cd; color: #7a4f00 !important; font-weight: 600; }
+.fw-summary { margin: 4px 0 8px; }
 .sec-head { display: flex; justify-content: space-between; align-items: center; margin-top: 22px; }
 .sec-head h2 { margin: 0; }
 .view-toggle { display: flex; border: 1px solid #ccc; border-radius: 6px; overflow: hidden; }
@@ -752,12 +754,21 @@ def render_home(db):
     else:
         failures_html = '<div class="empty">Brak aktywnych awarii 🎉</div>'
 
-    # printers overview: last event + open counts + 30-day blocked downtime
+    # printers overview: last event + open counts + 30-day blocked downtime.
+    # Same population as the map (every printer ever seen: telemetry,
+    # check-ins, discovery, events) - listing only hosts with events hid
+    # exactly the printers that never had a failure.
     printers = db.execute(
-        "SELECT DISTINCT hostname FROM events ORDER BY hostname").fetchall()
+        "SELECT hostname, fw_version, gcode_release FROM printers"
+        " WHERE hostname NOT LIKE 'ZZ-%'"
+        " UNION SELECT DISTINCT hostname, NULL, NULL FROM events"
+        " WHERE hostname NOT IN (SELECT hostname FROM printers)"
+        " ORDER BY hostname").fetchall()
     cutoff = (datetime.now() -
               timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     prows = []
+    fw_counts = {}
+    row_fw = []
     for p in printers:
         h = p["hostname"]
         opens = db.execute(
@@ -784,22 +795,49 @@ def render_home(db):
                  if opens["b"] else
                  ('<span class="badge b-degr">USZKODZONA</span>'
                   if opens["c"] else '<span class="badge b-ok">OK</span>'))
-        fw = gc = "—"
+        # versions: live telemetry when streaming, else the last value the
+        # printer reported (persisted) - an offline printer keeps its version
+        fw_raw, gc_raw = p["fw_version"], p["gcode_release"]
+        live_now = False
         if live := live_of(h):
             v = live[0]
-            fw = e(v["fw_version"]) if isinstance(
-                v.get("fw_version"), str) and v["fw_version"] else "—"
-            gc = e(v["gcode_release"]) if isinstance(
-                v.get("gcode_release"), str) and v["gcode_release"] else "—"
+            live_now = True
+            if isinstance(v.get("fw_version"), str) and v["fw_version"]:
+                fw_raw = v["fw_version"]
+            if isinstance(v.get("gcode_release"), str) and v["gcode_release"]:
+                gc_raw = v["gcode_release"]
+        if fw_raw:
+            fw_counts[fw_raw] = fw_counts.get(fw_raw, 0) + 1
+        row_fw.append(fw_raw)
+        stale = "" if live_now else ' title="ostatnia znana wartość - drukarka nie nadaje telemetrii"'
+        fw = e(fw_raw) if fw_raw else "—"
+        gc = e(gc_raw) if gc_raw else "—"
         prows.append(
             f"""<tr><td class="host"><a class="host" href="/awaria/printer/{urllib.parse.quote(h)}">{e(h)}</a>
             {flag_chips(db, h)}</td>
             <td>{state}</td><td>{opens['c']}</td>
             <td>{downtime / 3600:.1f} h</td>
-            <td class="muted">{fw}</td><td class="muted">{gc}</td>
+            <td class="muted fwcell"{stale}>{fw}</td><td class="muted"{stale}>{gc}</td>
             <td class="muted">{e(last['received_at'] if last else '-')}</td></tr>"""
         )
-    printers_html = ('<table><tr><th>Drukarka</th><th>Stan</th><th>Otwarte awarie</th>'
+    # firmware spread: the majority build is the fleet's baseline, anything
+    # else is a straggler (or a canary) worth a glance
+    fw_summary = ""
+    if fw_counts:
+        majority = max(fw_counts, key=fw_counts.get)
+        for i, fw_raw in enumerate(row_fw):
+            if fw_raw and fw_raw != majority:
+                prows[i] = prows[i].replace('class="muted fwcell"',
+                                            'class="muted fwcell fw-odd"', 1)
+        parts = [f"<b>{e(v)}</b> ×{n}" for v, n in
+                 sorted(fw_counts.items(), key=lambda kv: -kv[1])]
+        missing = sum(1 for fw_raw in row_fw if not fw_raw)
+        if missing:
+            parts.append(f"brak danych ×{missing}")
+        fw_summary = ('<p class="muted fw-summary">Firmware: ' + ", ".join(parts)
+                      + " — wersje inne niż większość są podświetlone.</p>")
+    printers_html = (fw_summary +
+                     '<table><tr><th>Drukarka</th><th>Stan</th><th>Otwarte awarie</th>'
                      '<th>Przestój (30 dni)</th><th>Firmware</th><th>G-code</th><th>Ostatnie zdarzenie</th></tr>'
                      + "\n".join(prows) + "</table>") if prows else \
         '<div class="empty">Żadna drukarka jeszcze nic nie zgłosiła.</div>'
