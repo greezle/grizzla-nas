@@ -16,6 +16,8 @@ from awaria.services.telemetry import (FINE_EVERY_S, FINE_KEEP_S, live_of,
                                        is_overheated, HISTORY, live_lock)
 from awaria.services.catalog import SEVERITY_NAMES, LABEL_MAX_B, \
     QUESTION_MAX_B, ANSWER_MAX_B
+from awaria.services.offsets import (latest_offsets, changes_for_failure,
+                                     change_line, fmt_z, REASON_TEXT)
 
 
 CSS = """:root { --ink: #111; --muted: #666; --faint: #757575; --border: #e6e6e6; --surface: #fff;
@@ -948,6 +950,22 @@ def render_printer(db, host):
 
     suggested_tags, color_swatches = flag_suggestions(db, host)
     built_on = printer["built_on"] if printer and printer["built_on"] else ""
+    # steel-sheet Z offsets as last reported by the printer (fw >= 11268)
+    snap, sheet_table = latest_offsets(db, host)
+    if snap:
+        sheet_rows = "".join(
+            f"<tr><td>{'<b>' if idx == snap['active_idx'] else ''}{e(name)}"
+            f"{'</b> <span class=muted>(aktywna)</span>' if idx == snap['active_idx'] else ''}</td>"
+            f"<td style='text-align:right'>{e(fmt_z(z))}</td>"
+            f"<td class='muted'>{(e(last['at'][:16]) + ' (' + e(fmt_z(last['old_z'])) + ' → ' + e(fmt_z(last['new_z'])) + ')') if last else '—'}</td></tr>"
+            for idx, name, z, last in sheet_table)
+        offsets_html = (
+            f"<table class='plain'><tr><th>Podkładka</th><th>Offset Z [mm]</th><th>Ostatnia zmiana</th></tr>{sheet_rows}</table>"
+            f"<p class='muted'>Raport z {e(snap['at'])} ({e(REASON_TEXT.get(snap['reason'], snap['reason'] or '?'))}"
+            f"{', wydruk: ' + e(snap['print_file']) if snap['print_file'] else ''}). "
+            f"Zmiany offsetów trafiają do dziennika zdarzeń i do naprawy, w czasie której powstały.</p>")
+    else:
+        offsets_html = '<p class="muted">Drukarka jeszcze nie przysłała offsetów (wymaga firmware ≥ 11268).</p>'
     info_html = f"""
     <div class="cards">
       <div class="card">
@@ -977,6 +995,10 @@ def render_printer(db, host):
       <div class="card" style="flex-basis:100%">
         <h3>Temperatury (ostatnie 30 min)</h3>
         <div id="tchart"><p class="muted">Zbieranie danych...</p></div>
+      </div>
+      <div class="card">
+        <h3>Offsety podkładek</h3>
+        {offsets_html}
       </div>
       <div class="card">
         <h3>Komponenty — ostatnia wymiana / konserwacja</h3>
@@ -1084,6 +1106,9 @@ def render_failure(db, fid):
         if session else "")
 
     status = state_badge_of(f)
+    # sheet-offset adjustments the printer reported during this repair window
+    adjustments = changes_for_failure(db, fid)
+    adjustments_html = "".join(f"<li>{e(change_line(c))}</li>" for c in adjustments)         or '<li class="muted">brak zmian offsetów podkładek w czasie tej naprawy</li>'
     closed_info = (
         f'<p>Naprawiona: <b>{e(f["closed_at"])}</b> ({e(f["closed_by"] or "?")}) '
         f'— czas awarii: <b>{fmt_age(f["opened_at"], f["closed_at"])}</b></p>'
@@ -1130,6 +1155,8 @@ def render_failure(db, fid):
     <h2>Naprawa</h2>
     <div class="card">
       <p><b>Wykonane czynności:</b></p><ul>{done_html}</ul>
+      <p><b>Regulacje offsetów podkładek</b> <span class="muted">(automatycznie z drukarki: od zgłoszenia do końca pierwszego wydruku po naprawie)</span></p>
+      <ul>{adjustments_html}</ul>
       <form method="post" action="/awaria/failure/{fid}/repair">
         <p><b>Notatka serwisowa:</b><br>
            <textarea name="note" rows="3" style="width:100%">{e(f['repair_note'] or '')}</textarea></p>

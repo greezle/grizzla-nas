@@ -7,6 +7,7 @@ from awaria.db import (db_lock, open_db, now_pair, session_at,
                        to_epoch_or_none)
 from awaria.services import bus
 from awaria.services.notifications import notify
+from awaria.services import offsets
 
 
 ACTIONS_OPEN = ("AWARIA-BLOKADA", "AWARIA")
@@ -22,6 +23,11 @@ def handle_event(data, client_ip=None):
     """Apply one printer event; returns (http_status, response_dict)."""
     host = str(data.get("host") or "").strip()[:32]
     action = str(data.get("action") or "").strip()
+    if action == offsets.ACTION:
+        # sheet-offset snapshot: its own tables, no row in events (the
+        # derived "Zmiana offsetu" lines are the events); the detail is a
+        # JSON blob longer than the 200-char cap below
+        return offsets.handle_offsets_event(data, client_ip)
     try:
         category = int(data.get("category"))
     except (TypeError, ValueError):

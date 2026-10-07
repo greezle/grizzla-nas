@@ -519,11 +519,45 @@ def migrate_11_printer_versions(db):
     add_column(db, "printers", "gcode_release TEXT")
 
 
+def migrate_12_sheet_offsets(db):
+    """Steel-sheet Z offsets reported by the printers (fw >= 11268, see
+    services/offsets.py): every snapshot the printer sent, and every offset
+    change derived from consecutive snapshots - with the print it was made
+    during and the repair it belongs to."""
+    db.execute("""CREATE TABLE IF NOT EXISTS sheet_offsets (
+        id INTEGER PRIMARY KEY,
+        hostname TEXT NOT NULL,
+        at TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        reason TEXT,              -- boot / repair / print_end / print_abort / change
+        print_file TEXT,          -- file printed when the snapshot was taken
+        active_idx INTEGER,
+        sheets TEXT NOT NULL)""")  # JSON [[name, z|null], ...]
+    db.execute("CREATE INDEX IF NOT EXISTS ix_sheet_offsets_host"
+               " ON sheet_offsets(hostname, ts)")
+    db.execute("""CREATE TABLE IF NOT EXISTS sheet_offset_changes (
+        id INTEGER PRIMARY KEY,
+        hostname TEXT NOT NULL,
+        at TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        sheet_idx INTEGER NOT NULL,
+        sheet_name TEXT,
+        old_z REAL,
+        new_z REAL,
+        reason TEXT,
+        print_file TEXT,
+        failure_id INTEGER)""")   # repair this adjustment belongs to, optional
+    db.execute("CREATE INDEX IF NOT EXISTS ix_sheet_changes_host"
+               " ON sheet_offset_changes(hostname, ts)")
+    db.execute("CREATE INDEX IF NOT EXISTS ix_sheet_changes_failure"
+               " ON sheet_offset_changes(failure_id)")
+
+
 MIGRATIONS = [
     migrate_1_epoch_columns, migrate_2_sessions_material, migrate_3_net_log,
     migrate_4_printer_mac, migrate_5_print_kind, migrate_6_failure_comments,
     migrate_7_print_result, migrate_8_gcode_meta, migrate_9_filament_profile,
-    migrate_10_sfn, migrate_11_printer_versions
+    migrate_10_sfn, migrate_11_printer_versions, migrate_12_sheet_offsets
 ]
 
 

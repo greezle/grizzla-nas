@@ -6,12 +6,13 @@ import io
 import time
 
 from awaria.services.failures import failures_select
+from awaria.services.offsets import changes_text
 from awaria.services.sfn import reference_rows
 
 HEADER = [
     "ID", "Drukarka", "Kategoria", "Blokada", "Otwarta", "Naprawiona",
     "Czas [h]", "Zamknięta przez", "Podczas wydruku", "Szczegóły",
-    "Notatka serwisowa", "Komentarze"
+    "Notatka serwisowa", "Komentarze", "Regulacje offsetów"
 ]
 
 
@@ -25,7 +26,7 @@ def _rows(db, query):
             "TAK" if f["blocking"] else "NIE", f["opened_at"] or "",
             f["closed_at"] or "", hours, f["closed_by"] or "",
             f["print_file"] or "", f["detail"] or "", f["repair_note"] or "",
-            f["comments_joined"] or ""
+            f["comments_joined"] or "", changes_text(db, f["id"])
         ]
 
 
@@ -132,7 +133,7 @@ def export_failures_xlsx(db, query):
         cell.font = openpyxl.styles.Font(bold=True)
     for row in _rows(db, query):
         ws.append(row)
-    for i, width in enumerate([6, 10, 24, 9, 17, 17, 8, 13, 28, 40, 30, 40],
+    for i, width in enumerate([6, 10, 24, 9, 17, 17, 8, 13, 28, 40, 30, 40, 40],
                               start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
     ws.freeze_panes = "A2"
