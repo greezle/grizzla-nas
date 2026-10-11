@@ -32,6 +32,7 @@ REASON_TEXT = {
     "print_end": "koniec wydruku",
     "print_abort": "przerwany wydruk",
     "change": "zmiana na drukarce",
+    "periodic": "raport dobowy",
 }
 POST_REPAIR_MAX_S = 7 * 24 * 3600
 FIRST_PRINT_GRACE_S = 90
