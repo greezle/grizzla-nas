@@ -958,7 +958,9 @@ def render_printer(db, host):
             f"{'</b> <span class=muted>(aktywna)</span>' if idx == snap['active_idx'] else ''}</td>"
             f"<td style='text-align:right'>{e(fmt_z(z))}</td>"
             f"<td class='muted'>{(e(last['at'][:16]) + ' (' + e(fmt_z(last['old_z'])) + ' → ' + e(fmt_z(last['new_z'])) + ')') if last else '—'}</td></tr>"
-            for idx, name, z, last in sheet_table)
+            for idx, name, z, last in sheet_table if z is not None)  # uncalibrated sheets stay hidden
+        if not sheet_rows:
+            sheet_rows = "<tr><td colspan=3 class='muted'>żadna podkładka nie jest skalibrowana</td></tr>"
         offsets_html = (
             f"<table class='plain'><tr><th>Podkładka</th><th>Offset Z [mm]</th><th>Ostatnia zmiana</th></tr>{sheet_rows}</table>"
             f"<p class='muted'>Raport z {e(snap['at'])} ({e(REASON_TEXT.get(snap['reason'], snap['reason'] or '?'))}"
