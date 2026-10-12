@@ -203,6 +203,7 @@ header > #bell-wrap:nth-last-child(1):nth-child(3) { margin-left: auto; } /* no 
 .nk-overheat { border-left-color: #e65100; }
 .nk-gcode_update { border-left-color: #1565c0; }
 .nk-note { border-left-color: #f2c200; }
+.nk-offset { border-left-color: #6a1b9a; }
 .nempty { padding: 16px; color: #757575; text-align: center; }
 #notif-clear { display: none; width: 100%; border: none; background: #f2f2f2; padding: 9px; cursor: pointer;
   font-weight: 600; border-radius: 0 0 8px 8px; transition: background .15s ease; }

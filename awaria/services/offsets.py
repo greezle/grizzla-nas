@@ -22,6 +22,7 @@ import urllib.parse
 
 from awaria.db import db_lock, open_db, now_pair, session_at
 from awaria.services import bus
+from awaria.services.notifications import notify
 
 ACTION = "OFFSETY"
 CHANGE_ACTION = "OFFSET"
@@ -166,6 +167,10 @@ def handle_offsets_event(data, client_ip=None):
                 " print_session_id, answers) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (host, now, now_ts, None, CHANGE_ACTION, 0, CHANGE_LABEL,
                  detail, None, session_id, None))
+            # every adjustment also lands in the notification centre, linked
+            # to the repair it belongs to (or to the printer otherwise)
+            notify(db, "offset", f"{host}: offset {detail}", host,
+                   f"/awaria/failure/{failure_id}" if failure_id else printer_link(host))
             if failure_id:
                 changed_failures.add(failure_id)
         db.commit()
